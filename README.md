@@ -1,6 +1,10 @@
 # 🤖 gembot - Autonomous Windows Desktop, Web Browser & Coding Agent
 
-**gembot** is a fully autonomous Windows AI agent powered by **Ollama** and Google's **`gemma4:e2b`** model. It operates completely offline-first, requiring no API keys or cloud subscriptions. It acts as an autonomous digital assistant capable of full-stack coding, headless web browsing, completing homework and research assignments without intervention, managing your Windows system, and syncing code to GitHub.
+<p align="center">
+  <img src="docs/assets/hero.jpg" alt="GEMBOT - Autonomous Windows AI Agent" width="100%" />
+</p>
+
+**gembot** is a fully autonomous Windows AI agent powered by **Ollama** and Google's **`gemma4:e2b`** model (or fast local alternatives like **`yi-coder:1.5b`**). It operates completely offline-first, requiring no API keys or cloud subscriptions. It acts as an autonomous digital assistant capable of full-stack coding, headless web browsing, completing homework and research assignments without intervention, managing your Windows system, and syncing code to GitHub.
 
 ---
 
