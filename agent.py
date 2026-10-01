@@ -543,8 +543,19 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 path = args.get("path", "").strip()
                 content = args.get("content", "")
                 if not path:
-                    console.print(f"\n  [bold red]⚠ SKIPPED write_file:[/bold red] [dim]Model forgot to provide a filename. Skipping this call.[/dim]")
-                    history.append({"role": "tool", "tool_name": name, "content": "Error: 'path' argument was empty. Please provide a valid file path."})
+                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Model forgot to provide a filename — sending correction to retry...[/dim]")
+                    history.append({"role": "tool", "tool_name": name, "content": "ERROR: 'path' argument was empty or missing. You MUST provide a valid file path."})
+                    # Inject a strong corrective instruction
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            "CRITICAL ERROR: Your last write_file call had an EMPTY 'path'. "
+                            "You MUST call write_file again RIGHT NOW with a valid 'path' argument. "
+                            "The content you tried to write was:\n"
+                            f"```\n{content[:500]}\n```\n"
+                            "Determine the correct filename from context and call write_file again immediately."
+                        )
+                    })
                     continue
                 console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
                 code_lines = content.splitlines()
@@ -568,16 +579,30 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             with Status(f"[dim]Running action {name}...[/dim]", spinner="dots", console=console):
                 try:
                     fn = TOOLS.get(name)
-                    result = fn(**args) if fn else f"Error: unknown tool '{name}'"
+                    if fn is None:
+                        result = f"Error: unknown tool '{name}'. Available tools: {', '.join(TOOLS.keys())}. Call a valid tool now."
+                        console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Unknown tool '{name}' — sending correction...[/dim]")
+                    else:
+                        result = fn(**args)
                 except KeyboardInterrupt:
                     console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
                     result = "User cancelled this action."
                     history.append({"role": "tool", "tool_name": name, "content": str(result)})
                     return
                 except TypeError as e:
-                    # Model called a tool with missing/wrong arguments — recover gracefully
-                    result = f"Error: Tool '{name}' called with invalid arguments: {e}. Args received: {args}"
-                    console.print(f"\n  [bold red]⚠ Tool call error (recovering):[/bold red] [dim]{result}[/dim]")
+                    # Model called a tool with missing/wrong arguments — auto-recover
+                    result = (
+                        f"Error: Tool '{name}' called with invalid arguments: {e}. "
+                        f"Args received: {args}. "
+                        f"Fix the arguments and call '{name}' again immediately."
+                    )
+                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Bad args for {name} — sending correction to retry...[/dim]")
+                except Exception as e:
+                    result = (
+                        f"Error executing tool '{name}': {e}. "
+                        f"Fix the issue and try again."
+                    )
+                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]{name} failed — sending correction to retry...[/dim]")
 
             # Print action execution result
             if name != "write_file":
