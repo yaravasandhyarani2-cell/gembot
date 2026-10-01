@@ -1,0 +1,54 @@
+# Environment and sensitive keys
+.env
+.env.local
+.env.*.local
+
+# Python artifacts and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Playwright browser binaries
+.playwright/
+ms-playwright/
+
+# Operating System & IDE files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Log files and temporary crash dumps
+*.log
+*.tmp
+temp/
+scratch/
