@@ -112,7 +112,9 @@ def print_banner() -> None:
     console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
     console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
     console.print(f"[dim]Tip: You can drag & drop file/image paths or paste text directly into the prompt.[/dim]")
+    console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime while running to immediately halt the agent.[/dim]")
     console.print()
+
 
 
 # ==================== MULTIMODAL / FILE ATTACHMENT EXTRACTOR ====================
@@ -433,11 +435,16 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         msg["images"] = images
     history.append(msg)
 
-    console.print(f"[dim purple]  ⏳ [gembot reasoning using {MODEL} - executing autonomously...][/dim purple]")
+    console.print(f"[dim purple]  ⏳ [gembot reasoning using {MODEL} - press [bold white]Ctrl+C[/bold white] anytime to STOP/CANCEL][/dim purple]")
 
     for step in range(MAX_STEPS):
         try:
             resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
+        except KeyboardInterrupt:
+            console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
+            # Remove uncompleted user message or add cancelled marker
+            history.append({"role": "assistant", "content": "[Execution stopped by user]"})
+            return
         except Exception as e:
             console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}' in .env[/dim]")
             return
@@ -470,11 +477,19 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             else:
                 console.print(f"  [dim cyan]⚡ {name}({args})[/dim cyan]")
 
-            fn = TOOLS.get(name)
-            result = fn(**args) if fn else f"Error: unknown tool '{name}'"
+            try:
+                fn = TOOLS.get(name)
+                result = fn(**args) if fn else f"Error: unknown tool '{name}'"
+            except KeyboardInterrupt:
+                console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
+                result = "User cancelled this action."
+                history.append({"role": "tool", "tool_name": name, "content": str(result)})
+                return
+
             history.append({"role": "tool", "tool_name": name, "content": str(result)})
 
     console.print("\n[dim][gembot] Completed maximum autonomous steps for this task.[/dim]\n")
+
 
 
 def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
