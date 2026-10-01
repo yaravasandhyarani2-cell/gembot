@@ -97,7 +97,10 @@ SYSTEM = (
     "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
     "- If a task has multiple steps, do the FIRST step immediately with a tool call.\n"
     "- Never say 'I will do X' without also DOING X in the same response via a tool call.\n"
-    "- Complete tasks fully — write all files, run all commands, push to git if asked.\n\n"
+    "- Complete tasks fully — write all files, run all commands, push to git if asked.\n"
+    "- NEVER put comments (// or /* */) in JSON files. JSON does not support comments.\n"
+    "- ALWAYS provide the 'path' argument when calling write_file. Never leave it empty.\n"
+    "- If a tool call returns an error, IMMEDIATELY fix the problem and retry the tool call. Do NOT give up or skip.\n\n"
     "Your Available Tools:\n"
     "1. write_file: Create or overwrite any file with content. Use for ALL code/config/text files.\n"
     "2. run_command: Execute any Windows shell command (mkdir, npm install, git, etc).\n"
@@ -282,6 +285,64 @@ def read_file(path: str) -> str:
         return f"Error: {e}"
 
 
+def _sanitize_json(content: str) -> str:
+    """Strip JS-style comments and trailing commas from JSON content to make it valid."""
+    # Remove single-line comments (// ...)
+    lines = content.splitlines()
+    cleaned = []
+    in_block_comment = False
+    for line in lines:
+        if in_block_comment:
+            end_idx = line.find("*/")
+            if end_idx != -1:
+                line = line[end_idx + 2:]
+                in_block_comment = False
+            else:
+                continue
+        # Remove block comments /* ... */ on a single line
+        while "/*" in line:
+            start = line.index("/*")
+            end = line.find("*/", start + 2)
+            if end != -1:
+                line = line[:start] + line[end + 2:]
+            else:
+                line = line[:start]
+                in_block_comment = True
+                break
+        # Remove single-line comments (but not inside strings)
+        # Simple approach: remove // only if not inside a quoted string
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            continue
+        # Handle inline // comments (naive but effective for model output)
+        in_string = False
+        escape = False
+        cut_at = -1
+        for i, ch in enumerate(line):
+            if escape:
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            if not in_string and i + 1 < len(line) and line[i:i+2] == '//':
+                cut_at = i
+                break
+        if cut_at != -1:
+            line = line[:cut_at].rstrip()
+        if line.strip() or not cleaned or cleaned[-1].strip():
+            cleaned.append(line)
+
+    result = "\n".join(cleaned)
+
+    # Remove trailing commas before } or ]
+    result = re.sub(r',\s*([}\]])', r'\1', result)
+
+    return result
+
+
 def write_file(path: str, content: str) -> str:
     """Write or overwrite text or code to a file. Automatically creates folders.
 
@@ -292,9 +353,30 @@ def write_file(path: str, content: str) -> str:
     try:
         full = _p(path)
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+
+        # Auto-fix JSON files: strip comments, trailing commas, validate
+        corrections = []
+        if full.lower().endswith(".json"):
+            try:
+                json.loads(content)
+            except json.JSONDecodeError:
+                sanitized = _sanitize_json(content)
+                try:
+                    json.loads(sanitized)
+                    content = sanitized
+                    corrections.append("auto-stripped comments and/or trailing commas from JSON")
+                    console.print(f"  [bold yellow]🔧 AUTO-FIX:[/bold yellow] [dim]Stripped invalid comments/trailing commas from JSON file[/dim]")
+                except json.JSONDecodeError as je:
+                    corrections.append(f"WARNING: JSON is still invalid after cleanup: {je}")
+                    console.print(f"  [bold red]⚠ JSON VALIDATION:[/bold red] [dim]File has JSON syntax errors — model should fix: {je}[/dim]")
+
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"Successfully saved {len(content)} characters to {full}"
+
+        msg = f"Successfully saved {len(content)} characters to {full}"
+        if corrections:
+            msg += " | Corrections applied: " + "; ".join(corrections)
+        return msg
     except Exception as e:
         return f"Error: {e}"
 
