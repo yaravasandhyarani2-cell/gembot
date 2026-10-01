@@ -41,31 +41,34 @@ from prompt_toolkit.styles import Style
 console = Console()
 
 
-ENV_PATHS = [
-    Path(os.getcwd()) / ".env",
-    Path(os.path.expandvars(r"%USERPROFILE%\agent\.env")),
-    Path(__file__).resolve().parent / ".env",
-]
+# Central agent configuration path (%USERPROFILE%\agent\.env) and repo installation path
+GLOBAL_ENV = Path(os.path.expandvars(r"%USERPROFILE%\agent\.env"))
+REPO_ENV = Path(__file__).resolve().parent / ".env"
 
 def load_active_model() -> str:
-    """Read the latest MODEL setting from .env files or fallback."""
-    for p in ENV_PATHS:
-        try:
-            if p.is_file():
-                load_dotenv(p, override=True)
-        except Exception:
-            pass
+    """Read the latest MODEL setting from central config, falling back to local repo or default."""
+    if GLOBAL_ENV.is_file():
+        load_dotenv(GLOBAL_ENV, override=True)
+    elif REPO_ENV.is_file():
+        load_dotenv(REPO_ENV, override=True)
     return os.getenv("MODEL", "gemma4:e2b")
 
 def save_active_model(new_model: str) -> None:
-    """Save selected model to all discovered .env locations."""
+    """Save selected model to central %USERPROFILE%\\agent\\.env (and repo .env if existing).
+    
+    Never creates a new .env file in the user's current working project directory.
+    """
     global MODEL
     MODEL = new_model
     os.environ["MODEL"] = new_model
-    for p in ENV_PATHS:
+
+    targets = [GLOBAL_ENV]
+    if REPO_ENV.resolve() != GLOBAL_ENV.resolve() and REPO_ENV.exists():
+        targets.append(REPO_ENV)
+
+    for p in targets:
         try:
-            if not p.parent.exists():
-                continue
+            p.parent.mkdir(parents=True, exist_ok=True)
             if p.is_file():
                 lines = p.read_text(encoding="utf-8").splitlines()
                 updated = False
@@ -681,7 +684,7 @@ def select_model_interactive() -> str:
 
     save_active_model(chosen_name)
     console.print(f"[bold bright_green]✓ Active model switched to:[/bold bright_green] [bold white]{chosen_name}[/bold white]")
-    console.print(f"[dim]Updated configuration in .env files.[/dim]\n")
+    console.print(f"[dim]Saved configuration to central agent config ({GLOBAL_ENV}).[/dim]\n")
     return chosen_name
 
 
