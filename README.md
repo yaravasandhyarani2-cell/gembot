@@ -116,15 +116,13 @@ You can run `gembot` from **any** terminal in Windows:
 ```cmd
 gembot
 ```
-Output:
-```text
-=================================================================
- GEMBOT - Autonomous AI Coding, Web Browsing & Automation Agent
- Model: gemma4:e2b | Web & Browser | GitHub | Autonomous
- Commands: 'exit' to quit | 'clear' to reset memory
-=================================================================
-gembot> 
-```
+
+Inside the interactive shell, you have dedicated slash commands:
+- `/models` — View all local Ollama models in a formatted table and choose/switch the active model interactively.
+- `/models <name>` — Directly switch the active model (e.g. `/models yi-coder:1.5b`).
+- `/clear` — Clear the screen and reset conversation memory.
+- `/help` — Display available commands and shortcuts.
+- `exit` or `/exit` — Quit GEMBOT.
 
 ### 2. Direct Autonomous Task Execution (Examples)
 

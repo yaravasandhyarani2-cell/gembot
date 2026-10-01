@@ -41,7 +41,48 @@ from prompt_toolkit.styles import Style
 console = Console()
 
 
-MODEL = os.getenv("MODEL", "gemma4:e2b")
+ENV_PATHS = [
+    Path(os.getcwd()) / ".env",
+    Path(os.path.expandvars(r"%USERPROFILE%\agent\.env")),
+    Path(__file__).resolve().parent / ".env",
+]
+
+def load_active_model() -> str:
+    """Read the latest MODEL setting from .env files or fallback."""
+    for p in ENV_PATHS:
+        try:
+            if p.is_file():
+                load_dotenv(p, override=True)
+        except Exception:
+            pass
+    return os.getenv("MODEL", "gemma4:e2b")
+
+def save_active_model(new_model: str) -> None:
+    """Save selected model to all discovered .env locations."""
+    global MODEL
+    MODEL = new_model
+    os.environ["MODEL"] = new_model
+    for p in ENV_PATHS:
+        try:
+            if not p.parent.exists():
+                continue
+            if p.is_file():
+                lines = p.read_text(encoding="utf-8").splitlines()
+                updated = False
+                for idx, line in enumerate(lines):
+                    if line.strip().startswith("MODEL="):
+                        lines[idx] = f"MODEL={new_model}"
+                        updated = True
+                        break
+                if not updated:
+                    lines.append(f"MODEL={new_model}")
+                p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            else:
+                p.write_text(f"MODEL={new_model}\n", encoding="utf-8")
+        except Exception:
+            pass
+
+MODEL = load_active_model()
 MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "4000"))
 
@@ -115,10 +156,10 @@ def print_banner() -> None:
     console.print()
     console.print(f"[bold bright_magenta]Welcome to GEMBOT CLI![/bold bright_magenta]")
     console.print(f"[dim]v1.0.0 • Autonomous Multi-Tool AI Agent[/dim]")
-    console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](configured in .env)[/dim]")
+    console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
     console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
     console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: You can drag & drop file/image paths or paste text directly into the prompt.[/dim]")
+    console.print(f"[dim]Tip: Drag & drop files, or type [bold cyan]/models[/bold cyan] to switch models, [bold cyan]/help[/bold cyan] for commands.[/dim]")
     console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime while running to immediately halt the agent.[/dim]")
     console.print()
 
@@ -572,7 +613,80 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
     return full_prompt, images
 
 
+def select_model_interactive() -> str:
+    """List available Ollama models in a rich table and allow the user to select one."""
+    ensure_ollama_running()
+    try:
+        res = ollama.list()
+        raw_models = getattr(res, "models", []) or res.get("models", [])
+    except Exception as e:
+        console.print(f"[bold red]Error fetching models from Ollama:[/bold red] {e}")
+        return MODEL
+
+    model_list = []
+    for m in raw_models:
+        name = getattr(m, "model", None) or (m.get("name") if isinstance(m, dict) else str(m))
+        if name:
+            size_b = getattr(m, "size", 0) or (m.get("size", 0) if isinstance(m, dict) else 0)
+            if size_b and size_b > 1024 * 1024 * 1024:
+                size_str = f"{size_b / (1024**3):.1f} GB"
+            elif size_b and size_b > 1024 * 1024:
+                size_str = f"{size_b / (1024**2):.1f} MB"
+            else:
+                size_str = "-"
+            model_list.append({"name": name, "size": size_str})
+
+    if not model_list:
+        console.print("[yellow]No models found in local Ollama library.[/yellow]")
+        return MODEL
+
+    table = Table(title="[bold bright_magenta]🤖 Available Ollama Models[/bold bright_magenta]", border_style="bright_magenta")
+    table.add_column("#", style="bold yellow", justify="center", width=4)
+    table.add_column("Model Name", style="bold cyan", min_width=24)
+    table.add_column("Size", style="dim white", justify="right", width=12)
+    table.add_column("Status", style="bold green", justify="center", width=14)
+
+    for idx, item in enumerate(model_list, 1):
+        status = "[bold green]● Active[/bold green]" if item["name"] == MODEL else "[dim]available[/dim]"
+        table.add_row(str(idx), item["name"], item["size"], status)
+
+    console.print()
+    console.print(table)
+    console.print(f"\n[dim]Current model is:[/dim] [bold cyan]{MODEL}[/bold cyan]")
+    console.print("[bright_yellow]Enter number or full model name to switch (or press Enter to cancel):[/bright_yellow]")
+
+    try:
+        choice = prompt("select> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return MODEL
+
+    if not choice:
+        return MODEL
+
+    chosen_name = None
+    if choice.isdigit():
+        idx_choice = int(choice)
+        if 1 <= idx_choice <= len(model_list):
+            chosen_name = model_list[idx_choice - 1]["name"]
+        else:
+            console.print(f"[bold red]Invalid selection number: {choice}[/bold red]")
+            return MODEL
+    else:
+        for item in model_list:
+            if item["name"].lower() == choice.lower():
+                chosen_name = item["name"]
+                break
+        if not chosen_name:
+            chosen_name = choice  # Allow setting custom tag or model name
+
+    save_active_model(chosen_name)
+    console.print(f"[bold bright_green]✓ Active model switched to:[/bold bright_green] [bold white]{chosen_name}[/bold white]")
+    console.print(f"[dim]Updated configuration in .env files.[/dim]\n")
+    return chosen_name
+
+
 def main() -> None:
+    global MODEL
     ensure_ollama_running()
     print_banner()
 
@@ -608,6 +722,23 @@ def main() -> None:
             console.clear()
             print_banner()
             console.print("[dim cyan]Conversation memory cleared.[/dim cyan]")
+            continue
+        if task.lower().startswith("/models") or task.lower().startswith("/model"):
+            parts = task.split(maxsplit=1)
+            if len(parts) > 1 and parts[1].strip():
+                new_m = parts[1].strip()
+                save_active_model(new_m)
+                console.print(f"[bold bright_green]✓ Active model switched to:[/bold bright_green] [bold white]{new_m}[/bold white]\n")
+            else:
+                select_model_interactive()
+            continue
+        if task.lower() in {"/help", "help"}:
+            console.print("\n[bold bright_magenta]GEMBOT Slash Commands & Shortcuts:[/bold bright_magenta]")
+            console.print("  [bold yellow]/models[/bold yellow]          - List and interactively select your Ollama model")
+            console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models yi-coder:1.5b)")
+            console.print("  [bold yellow]/clear[/bold yellow]           - Clear screen and conversation memory")
+            console.print("  [bold yellow]/exit[/bold yellow] or [bold yellow]exit[/bold yellow]    - Exit the gembot CLI")
+            console.print("  [bold yellow]Ctrl+C[/bold yellow]          - Halt any ongoing action immediately\n")
             continue
 
         processed_prompt, imgs = parse_multimodal_input(task)
