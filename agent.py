@@ -46,19 +46,24 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "4000"))
 
 SYSTEM = (
-    "You are 'GEMBOT', an elite autonomous Windows AI assistant inspired by Google DeepMind's coding agents. "
-    "You possess full autonomous capabilities for software engineering, web browsing, researching and finishing "
-    "school/work assignments, document inspection, and automated Git/GitHub synchronization without human intervention.\n\n"
-    "Your Available Capabilities:\n"
-    "1. Autonomous execution: Finish complex multi-step instructions completely from start to finish.\n"
-    "2. Web Browsing & Research: Use web_search to find information and browse_webpage to read pages, "
-    "articles, study materials, questions, or documentation.\n"
-    "3. Assignments & Problem Solving: Read assignments/specs/documents, perform web research, write comprehensive "
-    "solutions, code them, verify, and output reports or complete project directories.\n"
-    "4. Self-Coding & Creation: Write robust, modular, bug-free scripts and programs using write_file.\n"
-    "5. Git & GitHub: Use git_commit_and_push to stage, commit, and push changes directly to GitHub repositories.\n"
-    "6. Windows Automation: Open apps, read/write/move files, inspect directories, and run shell commands.\n\n"
-    "Rules: Use full absolute paths when managing files. When finished, provide a concise and beautiful summary."
+    "You are 'GEMBOT', an elite autonomous Windows AI assistant. "
+    "You MUST use your tools to complete every task. NEVER just describe or plan — always ACT immediately.\n\n"
+    "CRITICAL RULES (violating these is FAILURE):\n"
+    "- ALWAYS call a tool on EVERY response. Never output a plan without calling a tool.\n"
+    "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
+    "- If a task has multiple steps, do the FIRST step immediately with a tool call.\n"
+    "- Never say 'I will do X' without also DOING X in the same response via a tool call.\n"
+    "- Complete tasks fully — write all files, run all commands, push to git if asked.\n\n"
+    "Your Available Tools:\n"
+    "1. write_file: Create or overwrite any file with content. Use for ALL code/config/text files.\n"
+    "2. run_command: Execute any Windows shell command (mkdir, npm install, git, etc).\n"
+    "3. read_file: Read existing file contents.\n"
+    "4. list_files: List directory contents.\n"
+    "5. web_search: Search the internet for information.\n"
+    "6. browse_webpage: Open and read any webpage URL.\n"
+    "7. git_commit_and_push: Stage, commit, and push to GitHub.\n\n"
+    "Rules: Always use absolute paths. After completing a task, give a brief summary. "
+    "REMEMBER: You MUST call a tool — text-only responses are NOT acceptable."
 )
 
 
@@ -454,13 +459,36 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         msg = resp.message
         history.append(msg)
 
-        # If model answered directly with text or code
+        # If model answered with text only (no tool calls) — retry up to 3 times
         if not msg.tool_calls:
-            reply = msg.content.strip() if msg.content else "Task completed."
-            console.print()
-            console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
-            console.print()
-            return
+            reply = msg.content.strip() if msg.content else ""
+
+            # Check if this looks like a final summary (short, no file/command mentions)
+            is_final = (
+                step >= 1
+                and len(reply) < 800
+                and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan", "first,", "next,"])
+            )
+
+            if is_final or step == MAX_STEPS - 1:
+                # Genuine final answer — display it
+                if reply:
+                    console.print()
+                    console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
+                    console.print()
+                return
+            else:
+                # Model described instead of doing — kick it back into action
+                if reply:
+                    console.print()
+                    console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
+                console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]Model planned but didn't act — pushing it to execute now (step {step+2}/{MAX_STEPS})...[/dim]")
+                # Force the model to execute immediately
+                history.append({
+                    "role": "user",
+                    "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the first file or run the first command RIGHT NOW. Do not output any more text — just call a tool."
+                })
+                continue
 
         # If model generated actions / code / file creations
         for call in msg.tool_calls:
