@@ -3,6 +3,7 @@ Powered by Ollama + gemma4:e2b with autonomous tool calling, web browsing,
 multimodal file attachments (images, PDFs, documents), self-coding, and Git/GitHub automation.
 """
 import base64
+import gc
 import json
 import os
 import re
@@ -87,7 +88,8 @@ def save_active_model(new_model: str) -> None:
 
 MODEL = load_active_model()
 MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
-MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "4000"))
+MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "2000"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "24"))  # Max messages to keep in context (excludes system)
 
 SYSTEM = (
     "You are 'GEMBOT', an elite autonomous Windows AI assistant. "
@@ -120,6 +122,36 @@ def _p(path: str) -> str:
 
 def _cut(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT else text[:MAX_OUTPUT] + "\n...[truncated]"
+
+
+def trim_history(history: list, max_messages: int = None) -> list:
+    """Trim conversation history to prevent unbounded memory growth.
+
+    Keeps the system message (index 0) and the last `max_messages` entries.
+    Also truncates any excessively large tool-result messages in-place.
+    """
+    if max_messages is None:
+        max_messages = MAX_HISTORY
+    # Always keep the system prompt at index 0
+    if len(history) <= 1:
+        return history
+    system = history[0] if history[0].get("role") == "system" else None
+    msgs = history[1:] if system else history
+
+    # Truncate oversized tool results in-place to save memory
+    for msg in msgs:
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            content = msg.get("content", "")
+            if len(content) > MAX_OUTPUT:
+                msg["content"] = content[:MAX_OUTPUT] + "\n...[truncated]"
+
+    # Keep only the last max_messages
+    if len(msgs) > max_messages:
+        trimmed = msgs[-max_messages:]
+        if system:
+            return [system] + trimmed
+        return trimmed
+    return history
 
 
 # ==================== JULES-STYLE RETRO GRADIENT BANNER ====================
@@ -569,11 +601,25 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
     history.append(msg)
 
     for step in range(MAX_STEPS):
+        # Trim history before each call to prevent memory buildup
+        history[:] = trim_history(history)
+        gc.collect()
+
         # Dynamic Live Status Spinner
         with Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console) as status:
             try:
                 # Request Ollama response
                 resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
+            except MemoryError:
+                console.print("\n[bold yellow]⚠ Memory pressure detected — trimming context and retrying...[/bold yellow]")
+                # Aggressively trim to half the normal limit
+                history[:] = trim_history(history, max_messages=MAX_HISTORY // 2)
+                gc.collect()
+                try:
+                    resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
+                except (MemoryError, Exception) as e2:
+                    console.print(f"\n[bold red][!] Fatal memory error:[/bold red] {e2}\n[dim]Try a smaller model (e.g. /models yi-coder:1.5b) or reduce MAX_STEPS/MAX_OUTPUT in .env[/dim]")
+                    return
             except KeyboardInterrupt:
                 console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
                 history.append({"role": "assistant", "content": "[Execution stopped by user]"})
