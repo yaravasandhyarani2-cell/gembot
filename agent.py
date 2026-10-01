@@ -496,8 +496,12 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             args = dict(call.function.arguments)
 
             if name == "write_file":
-                path = args.get("path", "")
+                path = args.get("path", "").strip()
                 content = args.get("content", "")
+                if not path:
+                    console.print(f"\n  [bold red]⚠ SKIPPED write_file:[/bold red] [dim]Model forgot to provide a filename. Skipping this call.[/dim]")
+                    history.append({"role": "tool", "tool_name": name, "content": "Error: 'path' argument was empty. Please provide a valid file path."})
+                    continue
                 console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
                 code_lines = content.splitlines()
                 preview = "\n".join(code_lines[:20])
@@ -526,6 +530,10 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                     result = "User cancelled this action."
                     history.append({"role": "tool", "tool_name": name, "content": str(result)})
                     return
+                except TypeError as e:
+                    # Model called a tool with missing/wrong arguments — recover gracefully
+                    result = f"Error: Tool '{name}' called with invalid arguments: {e}. Args received: {args}"
+                    console.print(f"\n  [bold red]⚠ Tool call error (recovering):[/bold red] [dim]{result}[/dim]")
 
             # Print action execution result
             if name != "write_file":
