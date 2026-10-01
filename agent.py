@@ -104,7 +104,9 @@ SYSTEM = (
     "- ALWAYS provide the 'path' argument when calling write_file. Never leave it empty.\n"
     "- If a tool call returns an error, IMMEDIATELY fix the problem and retry the tool call. Do NOT give up or skip.\n\n"
     "Your Available Tools:\n"
-    "1. write_file: Create or overwrite any file with content. Use for ALL code/config/text files.\n"
+    "1. write_file: Create or overwrite any file. REQUIRES both 'path' AND 'content' arguments. "
+    "The 'path' MUST be a non-empty absolute file path (e.g. C:\\\\Users\\\\Subhash\\\\Desktop\\\\project\\\\index.js). "
+    "NEVER call write_file without a 'path'. If you forget the path, the call WILL FAIL.\n"
     "2. run_command: Execute any Windows shell command (mkdir, npm install, git, etc).\n"
     "3. read_file: Read existing file contents.\n"
     "4. list_files: List directory contents.\n"
@@ -594,6 +596,124 @@ def ensure_ollama_running() -> bool:
     return False
 
 
+def _infer_filename_from_content(content: str, history: list) -> str | None:
+    """Try to infer a filename from file content patterns and conversation history.
+
+    Returns a relative filename string (e.g. 'app/api/chat/route.js') or None.
+    """
+    if not content or not content.strip():
+        return None
+
+    first_lines = content[:1500]  # examine top of file
+    first_line = content.split("\n", 1)[0].strip()
+
+    # ── 1. Explicit filename comment at the top (e.g. "// app/api/chat/route.js") ──
+    header_match = re.match(
+        r'^(?://|#|/\*|<!--)\s*(?:file(?:name)?:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)',
+        first_line,
+        re.IGNORECASE,
+    )
+    if header_match:
+        return header_match.group(1).replace("\\", "/")
+
+    # ── 2. Shebang line ──
+    if first_line.startswith("#!"):
+        if "python" in first_line:
+            return "script.py"
+        if "node" in first_line:
+            return "script.js"
+        if "bash" in first_line or "sh" in first_line:
+            return "script.sh"
+
+    # ── 3. Well-known config / metadata files (check content signatures) ──
+    config_signatures = [
+        (r'"name"\s*:', r'"version"\s*:', "package.json"),
+        (r'"compilerOptions"\s*:', None, "tsconfig.json"),
+        (r'"scripts"\s*:', r'"dependencies"\s*:', "package.json"),
+        (r'"extends"\s*:', r'"compilerOptions"\s*:', "tsconfig.json"),
+    ]
+    for sig1, sig2, fname in config_signatures:
+        if re.search(sig1, first_lines):
+            if sig2 is None or re.search(sig2, first_lines):
+                return fname
+
+    # Known text config files
+    if first_line.startswith("# ") and "gitignore" in first_lines[:200].lower():
+        return ".gitignore"
+    if re.match(r'^(node_modules|\.next|\.env|dist|build)', first_line) and "\n" in content:
+        # Looks like a .gitignore listing
+        return ".gitignore"
+
+    # ── 4. Language-specific import/syntax patterns ──
+    lang_patterns = [
+        # Python
+        (r'^(import |from .+ import |def |class )', ".py"),
+        # JavaScript / TypeScript / JSX / TSX
+        (r'^(import .+ from |export |const |let |var |function |module\.exports)', ".js"),
+        (r'(React|useState|useEffect|jsx|tsx)', ".jsx"),
+        (r'^(import .+ from |export )', ".ts"),  # fallback
+        # HTML
+        (r'^<!DOCTYPE html|^<html|^<head|^<body', ".html"),
+        # CSS
+        (r'^(@import |@charset |@media |\*\s*\{|body\s*\{|html\s*\{|:root\s*\{|\.[\w-]+\s*\{)', ".css"),
+        # Markdown
+        (r'^# .+', ".md"),
+        # YAML
+        (r'^[\w-]+:\s*\n', ".yml"),
+    ]
+
+    detected_ext = None
+    for pattern, ext in lang_patterns:
+        if re.search(pattern, first_lines, re.MULTILINE):
+            detected_ext = ext
+            break
+
+    # ── 5. Search conversation history for recently mentioned filenames ──
+    mentioned_files = []
+    for msg_entry in reversed(history[-10:]):  # look at recent messages
+        msg_content = ""
+        if isinstance(msg_entry, dict):
+            msg_content = msg_entry.get("content", "") or ""
+        elif hasattr(msg_entry, "content"):
+            msg_content = msg_entry.content or ""
+
+        # Find file path mentions like "app/api/chat/route.js" or "README.md"
+        file_refs = re.findall(
+            r'(?:(?:[\w./\\-]+/)?[\w.-]+\.(?:js|jsx|ts|tsx|py|html|css|json|md|txt|yml|yaml|toml|cfg|sh|bat|cmd|env))',
+            msg_content,
+        )
+        mentioned_files.extend(file_refs)
+
+    # Try to match a mentioned file with the detected extension
+    if mentioned_files and detected_ext:
+        for f in mentioned_files:
+            if f.endswith(detected_ext):
+                return f
+
+    # If we detected an extension but no matching history file, use a sensible default
+    if detected_ext:
+        defaults = {
+            ".py": "main.py",
+            ".js": "index.js",
+            ".jsx": "App.jsx",
+            ".ts": "index.ts",
+            ".tsx": "App.tsx",
+            ".html": "index.html",
+            ".css": "styles.css",
+            ".md": "README.md",
+            ".yml": "config.yml",
+        }
+        return defaults.get(detected_ext, f"output{detected_ext}")
+
+    # ── 6. Check for Next.js specific patterns ──
+    if "NextResponse" in first_lines or "next/server" in first_lines:
+        return "app/api/route.js"
+    if "'use client'" in first_lines or '"use client"' in first_lines:
+        return "app/page.jsx"
+
+    return None
+
+
 def run_task(instruction: str, history: list, images: list = None) -> None:
     msg = {"role": "user", "content": instruction}
     if images:
@@ -663,6 +783,9 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 continue
 
         # If model generated actions / code / file creations
+        # Track consecutive empty-path retries for this step
+        empty_path_retries = getattr(run_task, '_empty_path_retries', 0)
+
         for call in msg.tool_calls:
             name = call.function.name
             args = dict(call.function.arguments)
@@ -671,20 +794,41 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 path = args.get("path", "").strip()
                 content = args.get("content", "")
                 if not path:
-                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Model forgot to provide a filename — sending correction to retry...[/dim]")
-                    history.append({"role": "tool", "tool_name": name, "content": "ERROR: 'path' argument was empty or missing. You MUST provide a valid file path."})
-                    # Inject a strong corrective instruction
-                    history.append({
-                        "role": "user",
-                        "content": (
-                            "CRITICAL ERROR: Your last write_file call had an EMPTY 'path'. "
-                            "You MUST call write_file again RIGHT NOW with a valid 'path' argument. "
-                            "The content you tried to write was:\n"
-                            f"```\n{content[:500]}\n```\n"
-                            "Determine the correct filename from context and call write_file again immediately."
-                        )
-                    })
-                    continue
+                    # ── Attempt to infer the filename from content ──
+                    inferred = _infer_filename_from_content(content, history)
+                    if inferred:
+                        path = os.path.join(os.getcwd(), inferred)
+                        args["path"] = path
+                        console.print(f"\n  [bold bright_green]🧠 AUTO-INFERRED PATH:[/bold bright_green] [dim]Model omitted filename — inferred as[/dim] [bold white]{path}[/bold white]")
+                    else:
+                        empty_path_retries += 1
+                        run_task._empty_path_retries = empty_path_retries
+                        if empty_path_retries >= 3:
+                            # Hard stop: generate a fallback filename and write anyway
+                            fallback = os.path.join(os.getcwd(), f"gembot_output_{int(time.time())}.txt")
+                            args["path"] = fallback
+                            path = fallback
+                            console.print(f"\n  [bold yellow]⚠ MAX RETRIES HIT:[/bold yellow] [dim]Could not infer filename after {empty_path_retries} attempts — saving as[/dim] [bold white]{fallback}[/bold white]")
+                            run_task._empty_path_retries = 0
+                        else:
+                            console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING ({empty_path_retries}/3):[/bold yellow] [dim]Model forgot filename — sending correction to retry...[/dim]")
+                            history.append({"role": "tool", "tool_name": name, "content": "ERROR: 'path' argument was empty or missing. You MUST provide a valid file path."})
+                            # Build a hint from content to help the model
+                            content_hint = content[:300].replace('\n', ' ').strip()
+                            history.append({
+                                "role": "user",
+                                "content": (
+                                    "CRITICAL ERROR: Your last write_file call had an EMPTY 'path'. "
+                                    "You MUST provide the 'path' argument. "
+                                    f"The content starts with: {content_hint}\n"
+                                    "Based on this content, determine the correct filename and call write_file "
+                                    "with BOTH 'path' and 'content' arguments RIGHT NOW."
+                                )
+                            })
+                            break  # break out of tool_calls loop to let the model retry
+                else:
+                    run_task._empty_path_retries = 0  # reset on success
+
                 console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
                 code_lines = content.splitlines()
                 preview = "\n".join(code_lines[:20])
