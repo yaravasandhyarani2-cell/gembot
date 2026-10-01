@@ -34,10 +34,12 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
 from rich.markdown import Markdown
+from rich.status import Status
 from prompt_toolkit import prompt
 from prompt_toolkit.styles import Style
 
 console = Console()
+
 
 MODEL = os.getenv("MODEL", "gemma4:e2b")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
@@ -435,30 +437,32 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         msg["images"] = images
     history.append(msg)
 
-    console.print(f"[dim purple]  ⏳ [gembot reasoning using {MODEL} - press [bold white]Ctrl+C[/bold white] anytime to STOP/CANCEL][/dim purple]")
-
     for step in range(MAX_STEPS):
-        try:
-            resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
-        except KeyboardInterrupt:
-            console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
-            # Remove uncompleted user message or add cancelled marker
-            history.append({"role": "assistant", "content": "[Execution stopped by user]"})
-            return
-        except Exception as e:
-            console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}' in .env[/dim]")
-            return
+        # Dynamic Live Status Spinner
+        with Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console) as status:
+            try:
+                # Request Ollama response
+                resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
+            except KeyboardInterrupt:
+                console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
+                history.append({"role": "assistant", "content": "[Execution stopped by user]"})
+                return
+            except Exception as e:
+                console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}' in .env[/dim]")
+                return
 
         msg = resp.message
         history.append(msg)
 
+        # If model answered directly with text or code
         if not msg.tool_calls:
             reply = msg.content.strip() if msg.content else "Task completed."
             console.print()
-            console.print(Panel(Markdown(reply), title="[bold bright_magenta]gembot[/bold bright_magenta]", border_style="bright_magenta"))
+            console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
             console.print()
             return
 
+        # If model generated actions / code / file creations
         for call in msg.tool_calls:
             name = call.function.name
             args = dict(call.function.arguments)
@@ -466,29 +470,44 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             if name == "write_file":
                 path = args.get("path", "")
                 content = args.get("content", "")
-                console.print(f"  [bright_cyan]💾 Saving file:[/bright_cyan] [bold white]{path}[/bold white]")
-                preview_lines = content.splitlines()[:15]
-                console.print(Panel("\n".join(preview_lines) + ("\n... [remaining code written]" if len(content.splitlines()) > 15 else ""), title="[dim]Code Preview[/dim]", border_style="dim cyan"))
-            elif name in ("web_search", "browse_webpage", "run_command", "open_app"):
-                arg_val = list(args.values())[0] if args else ""
-                console.print(f"  [bright_yellow]⚡ {name}:[/bright_yellow] [white]{arg_val}[/white]")
+                console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
+                code_lines = content.splitlines()
+                preview = "\n".join(code_lines[:20])
+                if len(code_lines) > 20:
+                    preview += f"\n... [+{len(code_lines) - 20} more lines written to {path}]"
+                console.print(Panel(preview, title=f"[dim cyan]Live Code Generator: {os.path.basename(path)}[/dim cyan]", border_style="cyan"))
+            elif name in ("web_search", "browse_webpage"):
+                query_or_url = list(args.values())[0] if args else ""
+                console.print(f"\n  [bold bright_blue]🌐 LIVE WEB RESEARCH:[/bold bright_blue] [white]{name} -> {query_or_url}[/white]")
+            elif name == "run_command":
+                cmd = args.get("command", "")
+                console.print(f"\n  [bold bright_yellow]⚡ EXECUTING COMMAND:[/bold bright_yellow] [bold yellow]{cmd}[/bold yellow]")
             elif name == "git_commit_and_push":
-                console.print(f"  [bright_green]🐙 Git Push:[/bright_green] [white]{args.get('commit_message')}[/white]")
+                msg_txt = args.get("commit_message", "")
+                console.print(f"\n  [bold bright_magenta]🐙 GITHUB AUTOMATION:[/bold bright_magenta] [white]{msg_txt}[/white]")
             else:
-                console.print(f"  [dim cyan]⚡ {name}({args})[/dim cyan]")
+                console.print(f"\n  [dim cyan]⚡ [tool] {name}({args})[/dim cyan]")
 
-            try:
-                fn = TOOLS.get(name)
-                result = fn(**args) if fn else f"Error: unknown tool '{name}'"
-            except KeyboardInterrupt:
-                console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
-                result = "User cancelled this action."
-                history.append({"role": "tool", "tool_name": name, "content": str(result)})
-                return
+            # Run the tool with live status
+            with Status(f"[dim]Running action {name}...[/dim]", spinner="dots", console=console):
+                try:
+                    fn = TOOLS.get(name)
+                    result = fn(**args) if fn else f"Error: unknown tool '{name}'"
+                except KeyboardInterrupt:
+                    console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
+                    result = "User cancelled this action."
+                    history.append({"role": "tool", "tool_name": name, "content": str(result)})
+                    return
+
+            # Print action execution result
+            if name != "write_file":
+                short_result = str(result)[:300] + ("..." if len(str(result)) > 300 else "")
+                console.print(f"     [dim]↳ Result:[/dim] [bright_black]{short_result}[/bright_black]")
 
             history.append({"role": "tool", "tool_name": name, "content": str(result)})
 
     console.print("\n[dim][gembot] Completed maximum autonomous steps for this task.[/dim]\n")
+
 
 
 
