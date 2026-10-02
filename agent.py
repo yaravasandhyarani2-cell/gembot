@@ -3,6 +3,7 @@ Powered by Ollama + qwen2.5-coder / gemma4:e2b with autonomous tool calling, web
 multimodal file attachments (images, PDFs, documents), self-coding, and Git/GitHub automation.
 """
 import base64
+import ctypes
 import gc
 import io
 import json
@@ -12,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -67,18 +69,56 @@ COMMAND_TIMEOUT = int(CONFIG.get("command_timeout", 60))
 AUTO_CONFIRM = bool(CONFIG.get("auto_confirm", False))
 
 STOP_REQUESTED = False
+_STOP_LOCK = threading.Lock()
+
+def _set_stop_requested():
+    """Thread-safe setter for STOP_REQUESTED."""
+    global STOP_REQUESTED
+    with _STOP_LOCK:
+        STOP_REQUESTED = True
+
+def _clear_stop_requested():
+    """Thread-safe reset for STOP_REQUESTED."""
+    global STOP_REQUESTED
+    with _STOP_LOCK:
+        STOP_REQUESTED = False
 
 def sigint_handler(sig, frame):
-    """Handle Ctrl+C cleanly across Windows cmd/powershell."""
-    global STOP_REQUESTED
-    STOP_REQUESTED = True
-    console.print("\n[bold red]🛑 [gembot]: Ctrl+C received — aborting action...[/bold red]")
-    raise KeyboardInterrupt()
+    """Handle Ctrl+C cleanly across Windows cmd/powershell.
+    
+    We intentionally do NOT raise KeyboardInterrupt here because:
+    1. It crashes Rich Status spinners on Windows
+    2. It propagates into prompt_toolkit and kills the main loop
+    Instead we only set the flag; polling loops in run_task/run_command detect it.
+    """
+    _set_stop_requested()
+    # Use sys.stderr.write instead of console.print to avoid Rich re-entrancy issues
+    try:
+        sys.stderr.write("\n🛑 [gembot]: Ctrl+C received — aborting action...\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 try:
     signal.signal(signal.SIGINT, sigint_handler)
 except Exception:
     pass
+
+# Windows-specific: register a native console control handler for reliable Ctrl+C
+# Python's signal.SIGINT can't interrupt blocking C-level I/O on Windows,
+# so this ensures the STOP_REQUESTED flag always gets set.
+if sys.platform == "win32":
+    try:
+        _CTRL_C_EVENT = 0
+        @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+        def _win_ctrl_handler(ctrl_type):
+            if ctrl_type == _CTRL_C_EVENT:
+                _set_stop_requested()
+                return 1  # Handled — don't kill the process
+            return 0
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_win_ctrl_handler, True)
+    except Exception:
+        pass
 
 
 def load_gembot_project_context() -> str:
@@ -345,6 +385,7 @@ def write_file(path: str, content: str) -> str:
 
 def run_command(command: str) -> str:
     """Run a shell command autonomously with safety checks and timeout."""
+    global STOP_REQUESTED
     blocked = CONFIG.get("blocked_commands", [])
     is_d, desc = is_dangerous_command(command, blocked)
     if is_d:
@@ -353,11 +394,32 @@ def run_command(command: str) -> str:
 
     console.print(f"  [bright_black]⚡ [gembot cmd]:[/bright_black] [bold yellow]{command}[/bold yellow]")
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-        out = (r.stdout + r.stderr).strip()
-        return _cut(out or f"Executed successfully (exit code {r.returncode})")
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {COMMAND_TIMEOUT} seconds"
+        # Use Popen + polling so Ctrl+C can interrupt long-running commands on Windows.
+        # CREATE_NEW_PROCESS_GROUP prevents the child from consuming the Ctrl+C signal.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, creationflags=creationflags
+        )
+        deadline = time.time() + COMMAND_TIMEOUT
+        while proc.poll() is None:
+            if STOP_REQUESTED:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return "Command aborted by user (Ctrl+C)."
+            if time.time() > deadline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return f"Error: Command timed out after {COMMAND_TIMEOUT} seconds"
+            time.sleep(0.15)
+        out = (proc.stdout.read() + proc.stderr.read()).strip()
+        return _cut(out or f"Executed successfully (exit code {proc.returncode})")
     except Exception as e:
         return f"Error: {e}"
 
@@ -630,7 +692,7 @@ def print_banner() -> None:
 
 def run_task(instruction: str, history: list, images: list = None) -> None:
     global STOP_REQUESTED, MODEL
-    STOP_REQUESTED = False
+    _clear_stop_requested()
 
     msg = {"role": "user", "content": instruction}
     if images:
@@ -646,35 +708,73 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         history[:] = auto_summarize_history(history, max_messages=MAX_HISTORY)
         gc.collect()
 
-        with Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console):
-            try:
-                resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
-            except MemoryError:
+        # Run ollama.chat in a daemon thread so the main thread stays responsive
+        # to Ctrl+C. On Windows, blocking C-level I/O can't be interrupted by signals.
+        def _ollama_chat_threaded(model, messages, tools):
+            """Run ollama.chat in a background thread, returns (response, error)."""
+            container = {"resp": None, "error": None}
+            def _call():
+                try:
+                    container["resp"] = ollama.chat(model=model, messages=messages, tools=tools)
+                except Exception as e:
+                    container["error"] = e
+            t = threading.Thread(target=_call, daemon=True)
+            t.start()
+            while t.is_alive():
+                if STOP_REQUESTED:
+                    return None, "stopped"
+                t.join(timeout=0.2)
+            if container["error"]:
+                return None, container["error"]
+            return container["resp"], None
+
+        try:
+            status = Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console)
+            status.start()
+        except Exception:
+            status = None
+        try:
+            resp, err = _ollama_chat_threaded(MODEL, history, list(TOOLS.values()))
+            if err == "stopped":
+                console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
+                return
+            if isinstance(err, MemoryError):
                 console.print("\n[bold yellow]⚠ Memory pressure detected — trimming context and retrying...[/bold yellow]")
                 history[:] = auto_summarize_history(history, max_messages=MAX_HISTORY // 2)
                 gc.collect()
-                try:
-                    resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
-                except Exception as e2:
-                    console.print(f"\n[bold red][!] Memory Error:[/bold red] {e2}")
+                resp, err2 = _ollama_chat_threaded(MODEL, history, list(TOOLS.values()))
+                if err2 == "stopped":
+                    console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
                     return
-            except KeyboardInterrupt:
-                console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
-                return
-            except Exception as e:
+                if err2:
+                    console.print(f"\n[bold red][!] Memory Error:[/bold red] {err2}")
+                    return
+            elif err is not None:
                 # Model fallback handling
                 fallback = CONFIG.get("fallback_model", "qwen2.5-coder:3b")
                 if fallback != MODEL:
                     console.print(f"\n[bold yellow]⚠ Model '{MODEL}' failed. Auto-falling back to '{fallback}'...[/bold yellow]")
                     MODEL = fallback
-                    try:
-                        resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
-                    except Exception as e_fb:
-                        console.print(f"[bold red][!] Fallback also failed:[/bold red] {e_fb}")
+                    resp, err_fb = _ollama_chat_threaded(MODEL, history, list(TOOLS.values()))
+                    if err_fb == "stopped":
+                        console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
+                        return
+                    if err_fb:
+                        console.print(f"[bold red][!] Fallback also failed:[/bold red] {err_fb}")
                         return
                 else:
-                    console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}'[/dim]")
+                    console.print(f"\n[bold red][!] Ollama Error:[/bold red] {err}\n[dim]Verify model '{MODEL}'[/dim]")
                     return
+        except KeyboardInterrupt:
+            _set_stop_requested()
+            console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
+            return
+        finally:
+            try:
+                if status:
+                    status.stop()
+            except Exception:
+                pass
 
         msg = resp.message
         history.append(msg)
@@ -781,22 +881,39 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             else:
                 console.print(f"\n  [dim cyan]⚡ [tool] {name}({args})[/dim cyan]")
 
-            with Status(f"[dim]Running action {name}...[/dim]", spinner="dots", console=console):
-                try:
-                    fn = TOOLS.get(name)
-                    if fn is None:
-                        result = f"Error: unknown tool '{name}'. Available: {', '.join(TOOLS.keys())}."
-                    else:
-                        result = fn(**args)
-                except KeyboardInterrupt:
+            try:
+                tool_status = Status(f"[dim]Running action {name}...[/dim]", spinner="dots", console=console)
+                tool_status.start()
+            except Exception:
+                tool_status = None
+            try:
+                fn = TOOLS.get(name)
+                if fn is None:
+                    result = f"Error: unknown tool '{name}'. Available: {', '.join(TOOLS.keys())}."
+                else:
+                    result = fn(**args)
+                # Check if Ctrl+C was pressed during tool execution
+                if STOP_REQUESTED:
                     console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
                     result = "User aborted this action via Ctrl+C."
                     history.append({"role": "tool", "tool_name": name, "content": str(result)})
                     return
-                except TypeError as e:
-                    result = f"Error: Tool '{name}' invalid arguments: {e}. Args: {args}."
-                except Exception as e:
-                    result = f"Error executing tool '{name}': {e}."
+            except KeyboardInterrupt:
+                _set_stop_requested()
+                console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
+                result = "User aborted this action via Ctrl+C."
+                history.append({"role": "tool", "tool_name": name, "content": str(result)})
+                return
+            except TypeError as e:
+                result = f"Error: Tool '{name}' invalid arguments: {e}. Args: {args}."
+            except Exception as e:
+                result = f"Error executing tool '{name}': {e}."
+            finally:
+                try:
+                    if tool_status:
+                        tool_status.stop()
+                except Exception:
+                    pass
 
             # Log activity to session log
             log_session_activity(name, args, str(result))
@@ -962,9 +1079,16 @@ def main() -> None:
     })
 
     while True:
+        # Always clear the stop flag before waiting for input
+        _clear_stop_requested()
         try:
             task = prompt([('class:prompt', '> Search sessions or type / to use commands\ngembot> ')], style=custom_style).strip()
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            # Ctrl+C at the prompt just cancels the current input, not the program
+            _clear_stop_requested()
+            console.print("\n[dim yellow]  (Input cancelled — press Ctrl+C again or type 'exit' to quit)[/dim yellow]")
+            continue
+        except EOFError:
             console.print("\n[bright_magenta]Goodbye from GEMBOT![/bright_magenta]")
             break
 
@@ -1066,7 +1190,13 @@ def main() -> None:
             continue
 
         processed_prompt, imgs = parse_multimodal_input(task)
-        run_task(processed_prompt, history, imgs)
+        _clear_stop_requested()
+        try:
+            run_task(processed_prompt, history, imgs)
+        except KeyboardInterrupt:
+            console.print("\n[bold red]🛑 [gembot]: Execution interrupted.[/bold red]\n")
+        finally:
+            _clear_stop_requested()
 
 
 if __name__ == "__main__":
