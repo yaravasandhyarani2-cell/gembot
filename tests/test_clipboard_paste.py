@@ -22,6 +22,11 @@ def test_clipboard_image_is_only_attached_on_explicit_paste(monkeypatch):
     assert images == ["image-bytes"]
     assert clipboard_reads == [True]
 
+    prompt, images = agent.parse_multimodal_input("/paste fix the issues in this screenshot")
+    assert prompt == "fix the issues in this screenshot"
+    assert images == ["image-bytes"]
+    assert clipboard_reads == [True, True]
+
 
 def test_ctrl_v_key_binding_queues_clipboard_image(monkeypatch):
     pending_images = []

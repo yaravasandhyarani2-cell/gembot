@@ -976,7 +976,9 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
     handled_paths = set()
 
     trimmed = raw_input.strip()
-    is_paste_command = trimmed.lower() in {"/paste", "paste", "/clip", "clip"}
+    paste_match = re.fullmatch(r"(?:/paste|paste|/clip|clip)(?:\s+(.*))?", trimmed, re.IGNORECASE | re.DOTALL)
+    is_paste_command = paste_match is not None
+    paste_question = paste_match.group(1).strip() if paste_match and paste_match.group(1) else ""
 
     patterns = [
         r'(?:&?\s*["\']([A-Za-z]:\\[^"\'<>|]+)["\'])',
@@ -1022,7 +1024,7 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
 
     full_prompt = raw_input
     if is_paste_command:
-        full_prompt = "Analyze the attached image or file from clipboard and help me fix the issue shown in it."
+        full_prompt = paste_question or "Analyze the attached image or file from clipboard and help me fix the issue shown in it."
 
     if text_additions:
         full_prompt = full_prompt + "\n" + "\n".join(text_additions)
@@ -1156,8 +1158,8 @@ def main() -> None:
         if pending_clipboard_images:
             count = len(pending_clipboard_images)
             label = "image" if count == 1 else "images"
-            return HTML(f"<ansigreen>📎 {count} {label} attached</ansigreen>  <ansigray>Ctrl+V add more · Enter send · /paste also works</ansigray>")
-        return HTML("<ansigray>Ctrl+V paste text or attach a clipboard image · /paste also works</ansigray>")
+            return HTML(f"<ansigreen>📎 {count} {label} attached</ansigreen>  <ansigray>Ctrl+V add more · Enter send · /paste [question] also works</ansigray>")
+        return HTML("<ansigray>Ctrl+V paste text or attach a clipboard image · /paste [question] also works</ansigray>")
 
     while True:
         # Always clear the stop flag before waiting for input
@@ -1268,7 +1270,7 @@ def main() -> None:
             console.print("\n[bold bright_magenta]GEMBOT Slash Commands & Shortcuts:[/bold bright_magenta]")
             console.print("  [bold yellow]/models[/bold yellow]          - List and interactively select your Ollama model")
             console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models qwen2.5-coder:7b)")
-            console.print("  [bold yellow]/paste[/bold yellow]           - Directly inspect screenshot/image or file in clipboard")
+            console.print("  [bold yellow]/paste [question][/bold yellow] - Attach clipboard image and ask a question")
             console.print("  [bold yellow]Ctrl+V[/bold yellow]            - Attach the clipboard image to the message being composed")
             console.print("  [bold yellow]/undo[/bold yellow]            - Restore the last modified file from backups")
             console.print("  [bold yellow]/auto on|off[/bold yellow]    - Toggle confirmation prompts for dangerous actions")
