@@ -778,36 +778,67 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         msg = resp.message
         history.append(msg)
 
-        # If model answered with text only (no tool calls) — retry up to 3 times
+        # If model answered with text only (no tool calls)
         if not msg.tool_calls:
             reply = msg.content.strip() if msg.content else ""
 
-            # Check if this looks like a final summary (short, no file/command mentions)
-            is_final = (
-                step >= 1
-                and len(reply) < 800
-                and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan", "first,", "next,"])
-            )
+            # Check if model outputted raw JSON representing a tool call
+            # e.g.: {"name": "write_file", "arguments": {...}} or ```json {"name": ...} ```
+            extracted_tool_call = None
+            clean_reply = reply
+            if "```" in clean_reply:
+                m_code = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", clean_reply)
+                if m_code:
+                    clean_reply = m_code.group(1).strip()
 
-            if is_final or step == MAX_STEPS - 1:
-                # Genuine final answer — display it
-                if reply:
-                    console.print()
-                    console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
-                    console.print()
-                return
+            if clean_reply.startswith("{") and clean_reply.endswith("}"):
+                try:
+                    parsed_json = json.loads(clean_reply)
+                    if isinstance(parsed_json, dict) and ("name" in parsed_json or "tool" in parsed_json):
+                        tool_nm = parsed_json.get("name") or parsed_json.get("tool")
+                        tool_args = parsed_json.get("arguments") or parsed_json.get("parameters") or parsed_json.get("args") or {}
+                        if tool_nm in TOOLS and isinstance(tool_args, dict):
+                            class DummyFunc:
+                                def __init__(self, name, arguments):
+                                    self.name = name
+                                    self.arguments = arguments
+                            class DummyCall:
+                                def __init__(self, function):
+                                    self.function = function
+                            extracted_tool_call = DummyCall(DummyFunc(tool_nm, tool_args))
+                            console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {tool_nm} from model text[/dim]")
+                except Exception:
+                    pass
+
+            if extracted_tool_call:
+                msg.tool_calls = [extracted_tool_call]
             else:
-                # Model described instead of doing — kick it back into action
-                if reply:
-                    console.print()
-                    console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
-                console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]Model planned but didn't act — pushing it to execute now (step {step+2}/{MAX_STEPS})...[/dim]")
-                # Force the model to execute immediately
-                history.append({
-                    "role": "user",
-                    "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the first file or run the first command RIGHT NOW. Do not output any more text — just call a tool."
-                })
-                continue
+                # Check if this looks like a final summary (short, no file/command mentions)
+                is_final = (
+                    step >= 1
+                    and len(reply) < 800
+                    and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan", "first,", "next,"])
+                )
+
+                if is_final or step == MAX_STEPS - 1:
+                    # Genuine final answer — display it
+                    if reply:
+                        console.print()
+                        console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
+                        console.print()
+                    return
+                else:
+                    # Model described instead of doing — kick it back into action
+                    if reply:
+                        console.print()
+                        console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
+                    console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]Model planned but didn't act — pushing it to execute now (step {step+2}/{MAX_STEPS})...[/dim]")
+                    # Force the model to execute immediately
+                    history.append({
+                        "role": "user",
+                        "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the first file or run the first command RIGHT NOW. Do not output any more text — just call a tool."
+                    })
+                    continue
 
         # If model generated actions / code / file creations
         # Track consecutive empty-path retries for this step
