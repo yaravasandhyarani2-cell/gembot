@@ -4,6 +4,7 @@ multimodal file attachments (images, PDFs, documents), self-coding, and Git/GitH
 """
 import base64
 import gc
+import io
 import json
 import os
 import re
@@ -199,7 +200,7 @@ def print_banner() -> None:
     console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
     console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
     console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: Drag & drop files, or type [bold cyan]/models[/bold cyan] to switch models, [bold cyan]/help[/bold cyan] for commands.[/dim]")
+    console.print(f"[dim]Tip: Drag & drop / paste file paths, copy screenshots to clipboard & use [bold cyan]/paste[/bold cyan], or type [bold cyan]/models[/bold cyan].[/dim]")
     console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime while running to immediately halt the agent.[/dim]")
     console.print()
 
@@ -211,10 +212,36 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".csv"}
 
 
+def get_clipboard_image() -> dict:
+    """Check system clipboard for copied images and return base64 data."""
+    try:
+        from PIL import ImageGrab
+        im = ImageGrab.grabclipboard()
+        # Handle list of file paths from clipboard (when copying a file in Windows Explorer)
+        if isinstance(im, list):
+            for file_path in im:
+                res = extract_content_from_path(str(file_path))
+                if res:
+                    return res
+            return {}
+
+        # Handle PIL Image directly in clipboard (screenshots / copied images)
+        if im is not None and hasattr(im, "save"):
+            buffered = io.BytesIO()
+            im.save(buffered, format="PNG")
+            b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            return {"type": "image", "data": b64, "path": "clipboard_image.png"}
+    except Exception:
+        pass
+    return {}
+
+
 def extract_content_from_path(raw_path: str) -> dict:
     """Extract text or image base64 if user dragged/pasted a file path."""
-    clean_path = raw_path.strip().strip("'").strip('"')
-    p = Path(clean_path)
+    clean_path = raw_path.strip().strip("'").strip('"').strip('& ')
+    if not clean_path:
+        return {}
+    p = Path(clean_path).expanduser()
     if not p.is_file():
         return {}
 
@@ -244,8 +271,8 @@ def extract_content_from_path(raw_path: str) -> dict:
         except Exception as e:
             return {"type": "error", "content": f"Could not read PDF: {e}"}
 
-    # Text / Code file
-    if ext in DOC_EXTENSIONS or ext == "":
+    # Text / Code file / Log file
+    if ext in DOC_EXTENSIONS or ext in {".log", ".env", ".toml", ".yaml", ".sh", ".bat", ".cmd"} or ext == "":
         try:
             with open(p, "r", encoding="utf-8", errors="replace") as f:
                 return {"type": "text", "content": f.read(), "path": str(p)}
@@ -889,24 +916,63 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
 
 
 def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
-    """Inspect input for paths to images, PDFs, or files and attach their contents."""
+    """Inspect input for paths to images, PDFs, files, or clipboard paste and attach their contents."""
     images = []
     text_additions = []
+    handled_paths = set()
 
-    # Check for file path mentions or drag-and-drop paths
-    # Matches patterns like C:\path\to\file.ext or "C:\path\to\file.ext"
-    potential_paths = re.findall(r'(?:[A-Za-z]:\\[^\s"\'<>|]+(?:\.[A-Za-z0-9]+)?)|(?:"[A-Za-z]:\\[^"<>|]+")|(?:\'[A-Za-z]:\\[^\'<>|]+\')', raw_input)
+    # 1. Check for clipboard image if user types /paste or clipboard mentions
+    trimmed = raw_input.strip()
+    is_paste_command = trimmed.lower() in {"/paste", "paste", "/clip", "clip"}
 
-    for p_str in potential_paths:
+    # 2. Extract potential paths:
+    # Handles Windows absolute paths (C:\... or "C:\..."), WSL/Unix paths (/...),
+    # and local relative file paths (.e.g error.png, ./logs/app.log, "screenshots\bug.jpg")
+    patterns = [
+        r'(?:&?\s*["\']([A-Za-z]:\\[^"\'<>|]+)["\'])',  # quoted Win path: "C:\path\to\file.ext"
+        r'(?:&?\s*["\']([.]{1,2}/[^"\'<>|]+|/[^"\'<>|]+)["\'])',  # quoted relative/posix: "./file.ext"
+        r'(?:[A-Za-z]:\\[^\s"\'<>|]+(?:\.[A-Za-z0-9_-]+)?)',  # unquoted Win path: C:\path\to\file.ext
+        r'(?:(?:\.{1,2}[/\\]|[a-zA-Z0-9_-]+[/\\])[^\s"\'<>|]+\.[a-zA-Z0-9]+)',  # relative path with dir: subdir/file.png
+        r'(?:[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|webp|bmp|gif|pdf|txt|log|py|js|json|html|css|md|csv|env))',  # standalone filename
+    ]
+
+    found_candidates = []
+    for pat in patterns:
+        for match in re.findall(pat, raw_input):
+            p_val = match if isinstance(match, str) else match[0]
+            if p_val and p_val not in found_candidates:
+                found_candidates.append(p_val)
+
+    for p_str in found_candidates:
         res = extract_content_from_path(p_str)
-        if res.get("type") == "image":
-            images.append(res["data"])
-            console.print(f"[dim green]  📎 Attached Image: {res['path']}[/dim green]")
-        elif res.get("type") == "text":
-            text_additions.append(f"\n[Attached File Contents of {res['path']}]:\n{res['content']}\n")
-            console.print(f"[dim green]  📎 Read & Attached Document: {res['path']}[/dim green]")
+        if not res and not os.path.isabs(p_str):
+            # Check relative to current working directory
+            res = extract_content_from_path(os.path.join(os.getcwd(), p_str))
+
+        if res and res.get("path") not in handled_paths:
+            handled_paths.add(res["path"])
+            if res.get("type") == "image":
+                images.append(res["data"])
+                console.print(f"[dim green]  📎 Attached Image: {res['path']}[/dim green]")
+            elif res.get("type") == "text":
+                text_additions.append(f"\n[Attached File Contents of {res['path']}]:\n{res['content']}\n")
+                console.print(f"[dim green]  📎 Read & Attached Document: {res['path']}[/dim green]")
+
+    # 3. If explicit /paste command or if no paths found, check clipboard for image
+    if is_paste_command or not handled_paths:
+        clip_res = get_clipboard_image()
+        if clip_res:
+            if clip_res.get("type") == "image":
+                images.append(clip_res["data"])
+                console.print(f"[bold bright_green]  📎 Attached Image directly from Clipboard (Screenshot/Copied Image)[/bold bright_green]")
+            elif clip_res.get("type") == "text" and is_paste_command:
+                text_additions.append(f"\n[Attached File Contents of {clip_res['path']}]:\n{clip_res['content']}\n")
+                console.print(f"[bold bright_green]  📎 Read & Attached File from Clipboard: {clip_res['path']}[/bold bright_green]")
 
     full_prompt = raw_input
+    if is_paste_command:
+        full_prompt = "Analyze the attached image or file from clipboard and help me fix the issue shown in it."
+
     if text_additions:
         full_prompt = full_prompt + "\n" + "\n".join(text_additions)
 
@@ -1035,7 +1101,8 @@ def main() -> None:
         if task.lower() in {"/help", "help"}:
             console.print("\n[bold bright_magenta]GEMBOT Slash Commands & Shortcuts:[/bold bright_magenta]")
             console.print("  [bold yellow]/models[/bold yellow]          - List and interactively select your Ollama model")
-            console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models yi-coder:1.5b)")
+            console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models qwen2.5-coder:7b)")
+            console.print("  [bold yellow]/paste[/bold yellow]           - Directly inspect screenshot/image or file in clipboard")
             console.print("  [bold yellow]/clear[/bold yellow]           - Clear screen and conversation memory")
             console.print("  [bold yellow]/exit[/bold yellow] or [bold yellow]exit[/bold yellow]    - Exit the gembot CLI")
             console.print("  [bold yellow]Ctrl+C[/bold yellow]          - Halt any ongoing action immediately\n")
