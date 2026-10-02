@@ -46,6 +46,8 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.status import Status
 from prompt_toolkit import prompt
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 
 # Import Modular Core
@@ -706,7 +708,7 @@ def print_banner() -> None:
     console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
     console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
     console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: Type [bold cyan]/paste[/bold cyan] to attach an image from the clipboard; ordinary prompts never read it. Use [bold cyan]/undo[/bold cyan], [bold cyan]/auto[/bold cyan], [bold cyan]/help[/bold cyan] for more commands.[/dim]")
+    console.print(f"[dim]Tip: Press [bold cyan]Ctrl+V[/bold cyan] while composing to attach a clipboard image, or type [bold cyan]/paste[/bold cyan]. Ordinary prompts never read the clipboard automatically.[/dim]")
     console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime to immediately abort any running action.[/dim]")
     console.print()
 
@@ -1028,6 +1030,33 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
     return full_prompt, images
 
 
+def make_terminal_key_bindings(pending_images: list) -> KeyBindings:
+    """Let Ctrl+V explicitly attach the current clipboard image to the prompt."""
+    bindings = KeyBindings()
+
+    @bindings.add("c-v")
+    def paste_clipboard(event):
+        clipboard_item = get_clipboard_image()
+        if clipboard_item.get("type") == "image":
+            pending_images.append(clipboard_item["data"])
+            event.app.invalidate()
+            return
+
+        # Preserve text-paste behavior when the system clipboard has no image.
+        text = clipboard_read()
+        if text and not text.lower().startswith("error") and "clipboard is empty" not in text.lower():
+            event.current_buffer.insert_text(text)
+            return
+        try:
+            internal_clipboard = event.app.clipboard.get_data()
+            if internal_clipboard.text:
+                event.current_buffer.insert_text(internal_clipboard.text)
+        except Exception:
+            pass
+
+    return bindings
+
+
 def select_model_interactive() -> str:
     """List available Ollama models in a rich table and allow the user to select one."""
     global MODEL
@@ -1120,12 +1149,26 @@ def main() -> None:
     custom_style = Style.from_dict({
         'prompt': '#FFB703 bold',
     })
+    pending_clipboard_images = []
+    input_key_bindings = make_terminal_key_bindings(pending_clipboard_images)
+
+    def input_toolbar():
+        if pending_clipboard_images:
+            count = len(pending_clipboard_images)
+            label = "image" if count == 1 else "images"
+            return HTML(f"<ansigreen>📎 {count} {label} attached</ansigreen>  <ansigray>Ctrl+V add more · Enter send · /paste also works</ansigray>")
+        return HTML("<ansigray>Ctrl+V paste text or attach a clipboard image · /paste also works</ansigray>")
 
     while True:
         # Always clear the stop flag before waiting for input
         _clear_stop_requested()
         try:
-            task = prompt([('class:prompt', '> Search sessions or type / to use commands\ngembot> ')], style=custom_style).strip()
+            task = prompt(
+                [('class:prompt', '> Search sessions or type / to use commands\ngembot> ')],
+                style=custom_style,
+                key_bindings=input_key_bindings,
+                bottom_toolbar=input_toolbar,
+            ).strip()
         except KeyboardInterrupt:
             # Ctrl+C at the prompt just cancels the current input, not the program
             _clear_stop_requested()
@@ -1136,7 +1179,10 @@ def main() -> None:
             break
 
         if not task:
-            continue
+            if pending_clipboard_images:
+                task = "Please analyze the attached image and help me fix the issue shown."
+            else:
+                continue
         if task.lower() in {"exit", "quit", "q", "/exit"}:
             console.print("[bright_magenta]Exiting GEMBOT. Have a great day![/bright_magenta]")
             break
@@ -1195,6 +1241,8 @@ def main() -> None:
                 f"show the checklist, then execute step 1 immediately with a tool call:\n{prompt_plan}"
             )
             processed_prompt, imgs = parse_multimodal_input(instruction)
+            imgs.extend(pending_clipboard_images)
+            pending_clipboard_images.clear()
             run_task(processed_prompt, history, imgs)
             continue
 
@@ -1221,6 +1269,7 @@ def main() -> None:
             console.print("  [bold yellow]/models[/bold yellow]          - List and interactively select your Ollama model")
             console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models qwen2.5-coder:7b)")
             console.print("  [bold yellow]/paste[/bold yellow]           - Directly inspect screenshot/image or file in clipboard")
+            console.print("  [bold yellow]Ctrl+V[/bold yellow]            - Attach the clipboard image to the message being composed")
             console.print("  [bold yellow]/undo[/bold yellow]            - Restore the last modified file from backups")
             console.print("  [bold yellow]/auto on|off[/bold yellow]    - Toggle confirmation prompts for dangerous actions")
             console.print("  [bold yellow]/plan <task>[/bold yellow]    - Force step-by-step checklist planning mode")
@@ -1233,6 +1282,8 @@ def main() -> None:
             continue
 
         processed_prompt, imgs = parse_multimodal_input(task)
+        imgs.extend(pending_clipboard_images)
+        pending_clipboard_images.clear()
         _clear_stop_requested()
         try:
             run_task(processed_prompt, history, imgs)

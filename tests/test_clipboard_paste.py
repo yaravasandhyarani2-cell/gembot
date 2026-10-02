@@ -21,3 +21,31 @@ def test_clipboard_image_is_only_attached_on_explicit_paste(monkeypatch):
     assert "clipboard" in prompt.lower()
     assert images == ["image-bytes"]
     assert clipboard_reads == [True]
+
+
+def test_ctrl_v_key_binding_queues_clipboard_image(monkeypatch):
+    pending_images = []
+    monkeypatch.setattr(
+        agent,
+        "get_clipboard_image",
+        lambda: {"type": "image", "data": "pasted-image"},
+    )
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidated = False
+
+        def invalidate(self):
+            self.invalidated = True
+
+    class FakeEvent:
+        def __init__(self):
+            self.app = FakeApp()
+
+    bindings = agent.make_terminal_key_bindings(pending_images)
+    ctrl_v = next(binding for binding in bindings.bindings if binding.keys[0].value == "c-v")
+    event = FakeEvent()
+    ctrl_v.handler(event)
+
+    assert pending_images == ["pasted-image"]
+    assert event.app.invalidated
