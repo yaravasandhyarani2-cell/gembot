@@ -706,7 +706,7 @@ def print_banner() -> None:
     console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
     console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
     console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: Drag & drop files, copy screenshots & type [bold cyan]/paste[/bold cyan], use [bold cyan]/undo[/bold cyan], [bold cyan]/auto[/bold cyan], [bold cyan]/help[/bold cyan].[/dim]")
+    console.print(f"[dim]Tip: Type [bold cyan]/paste[/bold cyan] to attach an image from the clipboard; ordinary prompts never read it. Use [bold cyan]/undo[/bold cyan], [bold cyan]/auto[/bold cyan], [bold cyan]/help[/bold cyan] for more commands.[/dim]")
     console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime to immediately abort any running action.[/dim]")
     console.print()
 
@@ -783,6 +783,13 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                     console.print(f"\n[bold red][!] Memory Error:[/bold red] {err2}")
                     return
             elif err is not None:
+                if images and "does not support multimodal requests" in str(err).lower():
+                    console.print(
+                        "\n[bold yellow]⚠ This model can't read images.[/bold yellow] "
+                        "Use [bold cyan]/models[/bold cyan] to switch to a vision-capable model "
+                        "such as [bold white]gemma4:e2b[/bold white], then retry [bold cyan]/paste[/bold cyan].\n"
+                    )
+                    return
                 # Model fallback handling
                 fallback = CONFIG.get("fallback_model", "qwen2.5-coder:3b")
                 if fallback != MODEL:
@@ -998,7 +1005,10 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
                 text_additions.append(f"\n[Attached File Contents of {res['path']}]:\n{res['content']}\n")
                 console.print(f"[dim green]  📎 Read & Attached Document: {res['path']}[/dim green]")
 
-    if is_paste_command or not handled_paths:
+    # Only read the clipboard on an explicit paste command. Otherwise a stale
+    # image can be attached to every normal text prompt and rejected by models
+    # that do not accept multimodal input.
+    if is_paste_command:
         clip_res = get_clipboard_image()
         if clip_res:
             if clip_res.get("type") == "image":
