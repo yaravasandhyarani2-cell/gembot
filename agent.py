@@ -70,31 +70,44 @@ AUTO_CONFIRM = bool(CONFIG.get("auto_confirm", False))
 
 STOP_REQUESTED = False
 _STOP_LOCK = threading.Lock()
+_STOP_EVENT = threading.Event()  # Event for faster cross-thread signalling
+_LAST_SIGINT_TIME = 0.0  # Track double Ctrl+C for force-exit
 
 def _set_stop_requested():
     """Thread-safe setter for STOP_REQUESTED."""
     global STOP_REQUESTED
     with _STOP_LOCK:
         STOP_REQUESTED = True
+    _STOP_EVENT.set()
 
 def _clear_stop_requested():
     """Thread-safe reset for STOP_REQUESTED."""
     global STOP_REQUESTED
     with _STOP_LOCK:
         STOP_REQUESTED = False
+    _STOP_EVENT.clear()
 
 def sigint_handler(sig, frame):
     """Handle Ctrl+C cleanly across Windows cmd/powershell.
     
-    We intentionally do NOT raise KeyboardInterrupt here because:
-    1. It crashes Rich Status spinners on Windows
-    2. It propagates into prompt_toolkit and kills the main loop
-    Instead we only set the flag; polling loops in run_task/run_command detect it.
+    First Ctrl+C sets the stop flag so polling loops can detect it.
+    Second Ctrl+C within 2 seconds force-exits the process immediately.
     """
+    global _LAST_SIGINT_TIME
+    now = time.time()
+    if now - _LAST_SIGINT_TIME < 2.0:
+        # Double Ctrl+C — force exit immediately
+        try:
+            sys.stderr.write("\n🛑 [gembot]: Force quit (double Ctrl+C).\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(1)
+    _LAST_SIGINT_TIME = now
     _set_stop_requested()
     # Use sys.stderr.write instead of console.print to avoid Rich re-entrancy issues
     try:
-        sys.stderr.write("\n🛑 [gembot]: Ctrl+C received — aborting action...\n")
+        sys.stderr.write("\n🛑 [gembot]: Ctrl+C received — aborting action... (press again to force quit)\n")
         sys.stderr.flush()
     except Exception:
         pass
@@ -113,6 +126,11 @@ if sys.platform == "win32":
         @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
         def _win_ctrl_handler(ctrl_type):
             if ctrl_type == _CTRL_C_EVENT:
+                now = time.time()
+                global _LAST_SIGINT_TIME
+                if now - _LAST_SIGINT_TIME < 2.0:
+                    os._exit(1)
+                _LAST_SIGINT_TIME = now
                 _set_stop_requested()
                 return 1  # Handled — don't kill the process
             return 0
@@ -406,18 +424,21 @@ def run_command(command: str) -> str:
             if STOP_REQUESTED:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=3)
+                    proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait(timeout=2)
                 return "Command aborted by user (Ctrl+C)."
             if time.time() > deadline:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=3)
+                    proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait(timeout=2)
                 return f"Error: Command timed out after {COMMAND_TIMEOUT} seconds"
-            time.sleep(0.15)
+            # Use Event.wait for faster Ctrl+C response instead of time.sleep
+            _STOP_EVENT.wait(timeout=0.1)
         out = (proc.stdout.read() + proc.stderr.read()).strip()
         return _cut(out or f"Executed successfully (exit code {proc.returncode})")
     except Exception as e:
@@ -710,20 +731,32 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
 
         # Run ollama.chat in a daemon thread so the main thread stays responsive
         # to Ctrl+C. On Windows, blocking C-level I/O can't be interrupted by signals.
+        # We create a dedicated ollama.Client per call so we can forcefully close
+        # its underlying httpx connection when the user presses Ctrl+C.
         def _ollama_chat_threaded(model, messages, tools):
             """Run ollama.chat in a background thread, returns (response, error)."""
             container = {"resp": None, "error": None}
+            # Create a per-call client so we can kill its connection on abort
+            client = ollama.Client()
             def _call():
                 try:
-                    container["resp"] = ollama.chat(model=model, messages=messages, tools=tools)
+                    container["resp"] = client.chat(model=model, messages=messages, tools=tools)
                 except Exception as e:
                     container["error"] = e
             t = threading.Thread(target=_call, daemon=True)
             t.start()
             while t.is_alive():
                 if STOP_REQUESTED:
+                    # Forcefully close the underlying HTTP connection to unblock the thread
+                    try:
+                        if hasattr(client, '_client') and client._client:
+                            client._client.close()
+                    except Exception:
+                        pass
+                    # Give the thread a moment to notice the closed connection
+                    t.join(timeout=0.5)
                     return None, "stopped"
-                t.join(timeout=0.2)
+                t.join(timeout=0.1)
             if container["error"]:
                 return None, container["error"]
             return container["resp"], None
