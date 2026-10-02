@@ -1,5 +1,5 @@
 """gembot - Autonomous Windows Desktop, Browser, and Coding AI Agent with Rich Jules-style CLI.
-Powered by Ollama + gemma4:e2b with autonomous tool calling, web browsing, 
+Powered by Ollama + qwen2.5-coder / gemma4:e2b with autonomous tool calling, web browsing, 
 multimodal file attachments (images, PDFs, documents), self-coding, and Git/GitHub automation.
 """
 import base64
@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -22,6 +23,11 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+# Ensure gembot directory is on sys.path so gembot_core can be imported anywhere
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 try:
     from dotenv import load_dotenv
@@ -40,83 +46,69 @@ from rich.status import Status
 from prompt_toolkit import prompt
 from prompt_toolkit.styles import Style
 
+# Import Modular Core
+from gembot_core.config import load_config, save_config, get_active_model, set_active_model, GLOBAL_ENV
+from gembot_core.safety import backup_file, undo_last_change, is_dangerous_command, log_session_activity
+from gembot_core.coding_tools import edit_file, search_files, delete_file, copy_file, make_dir, file_info, run_tests
+from gembot_core.memory import remember_fact, recall_fact, save_session, load_session, list_sessions, auto_summarize_history
+from gembot_core.system_tools import take_screenshot, clipboard_read, clipboard_write, system_info, list_processes, kill_process, download_file, http_request
+from gembot_core.doc_tools import create_docx, read_docx, create_excel, read_excel
+from gembot_core.plugins import load_plugins
+
 console = Console()
 
+# Load runtime config
+CONFIG = load_config()
+MODEL = CONFIG.get("model", "qwen2.5-coder:7b")
+MAX_STEPS = int(CONFIG.get("max_steps", 16))
+MAX_OUTPUT = int(CONFIG.get("max_output", 2500))
+MAX_HISTORY = int(CONFIG.get("max_history", 24))
+COMMAND_TIMEOUT = int(CONFIG.get("command_timeout", 60))
+AUTO_CONFIRM = bool(CONFIG.get("auto_confirm", False))
 
-# Central agent configuration path (%USERPROFILE%\agent\.env) and repo installation path
-GLOBAL_ENV = Path(os.path.expandvars(r"%USERPROFILE%\agent\.env"))
-REPO_ENV = Path(__file__).resolve().parent / ".env"
+STOP_REQUESTED = False
 
-def load_active_model() -> str:
-    """Read the latest MODEL setting from central config, falling back to local repo or default."""
-    if GLOBAL_ENV.is_file():
-        load_dotenv(GLOBAL_ENV, override=True)
-    elif REPO_ENV.is_file():
-        load_dotenv(REPO_ENV, override=True)
-    return os.getenv("MODEL", "gemma4:e2b")
+def sigint_handler(sig, frame):
+    """Handle Ctrl+C cleanly across Windows cmd/powershell."""
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    console.print("\n[bold red]🛑 [gembot]: Ctrl+C received — aborting action...[/bold red]")
+    raise KeyboardInterrupt()
 
-def save_active_model(new_model: str) -> None:
-    """Save selected model to central %USERPROFILE%\\agent\\.env (and repo .env if existing).
-    
-    Never creates a new .env file in the user's current working project directory.
-    """
-    global MODEL
-    MODEL = new_model
-    os.environ["MODEL"] = new_model
+try:
+    signal.signal(signal.SIGINT, sigint_handler)
+except Exception:
+    pass
 
-    targets = [GLOBAL_ENV]
-    if REPO_ENV.resolve() != GLOBAL_ENV.resolve() and REPO_ENV.exists():
-        targets.append(REPO_ENV)
 
-    for p in targets:
+def load_gembot_project_context() -> str:
+    """Load project conventions or rules from GEMBOT.md in the current working directory."""
+    gembot_md = Path("GEMBOT.md")
+    if gembot_md.is_file():
         try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            if p.is_file():
-                lines = p.read_text(encoding="utf-8").splitlines()
-                updated = False
-                for idx, line in enumerate(lines):
-                    if line.strip().startswith("MODEL="):
-                        lines[idx] = f"MODEL={new_model}"
-                        updated = True
-                        break
-                if not updated:
-                    lines.append(f"MODEL={new_model}")
-                p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            else:
-                p.write_text(f"MODEL={new_model}\n", encoding="utf-8")
+            content = gembot_md.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                console.print(f"[dim green]  📋 Loaded project context from GEMBOT.md[/dim green]")
+                return f"\n\n[Project Rules & Context from GEMBOT.md]:\n{content}\n"
         except Exception:
             pass
+    return ""
 
-MODEL = load_active_model()
-MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
-MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "2000"))
-MAX_HISTORY = int(os.getenv("MAX_HISTORY", "24"))  # Max messages to keep in context (excludes system)
 
-SYSTEM = (
-    "You are 'GEMBOT', an elite autonomous Windows AI assistant. "
-    "You MUST use your tools to complete every task. NEVER just describe or plan — always ACT immediately.\n\n"
-    "CRITICAL RULES (violating these is FAILURE):\n"
-    "- ALWAYS call a tool on EVERY response. Never output a plan without calling a tool.\n"
-    "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
-    "- If a task has multiple steps, do the FIRST step immediately with a tool call.\n"
-    "- Never say 'I will do X' without also DOING X in the same response via a tool call.\n"
-    "- Complete tasks fully — write all files, run all commands, push to git if asked.\n"
-    "- NEVER put comments (// or /* */) in JSON files. JSON does not support comments.\n"
-    "- ALWAYS provide the 'path' argument when calling write_file. Never leave it empty.\n"
-    "- If a tool call returns an error, IMMEDIATELY fix the problem and retry the tool call. Do NOT give up or skip.\n\n"
-    "Your Available Tools:\n"
-    "1. write_file: Create or overwrite any file. REQUIRES both 'path' AND 'content' arguments. "
-    "The 'path' MUST be a non-empty absolute file path (e.g. C:\\\\Users\\\\Subhash\\\\Desktop\\\\project\\\\index.js). "
-    "NEVER call write_file without a 'path'. If you forget the path, the call WILL FAIL.\n"
-    "2. run_command: Execute any Windows shell command (mkdir, npm install, git, etc).\n"
-    "3. read_file: Read existing file contents.\n"
-    "4. list_files: List directory contents.\n"
-    "5. web_search: Search the internet for information.\n"
-    "6. browse_webpage: Open and read any webpage URL.\n"
-    "7. git_commit_and_push: Stage, commit, and push to GitHub.\n\n"
-    "Rules: Always use absolute paths. After completing a task, give a brief summary. "
-    "REMEMBER: You MUST call a tool — text-only responses are NOT acceptable."
-)
+def build_system_prompt() -> str:
+    base = (
+        "You are 'GEMBOT', an elite autonomous Windows AI coding and automation assistant. "
+        "You MUST use your tools to complete every task. NEVER just describe or plan — always ACT immediately.\n\n"
+        "CRITICAL RULES:\n"
+        "- ALWAYS call a tool on EVERY response. Never output text without calling a tool.\n"
+        "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
+        "- Complete tasks fully — write all files, run tests, push to git if asked.\n"
+        "- ALWAYS provide the 'path' argument when calling write_file or edit_file.\n"
+        "- Use edit_file for updating parts of existing files instead of rewriting them completely.\n"
+        "- After completing all task steps, give a brief clear summary."
+    )
+    ctx = load_gembot_project_context()
+    return base + ctx
 
 
 def _p(path: str) -> str:
@@ -127,86 +119,19 @@ def _cut(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT else text[:MAX_OUTPUT] + "\n...[truncated]"
 
 
-def trim_history(history: list, max_messages: int = None) -> list:
-    """Trim conversation history to prevent unbounded memory growth.
-
-    Keeps the system message (index 0) and the last `max_messages` entries.
-    Also truncates any excessively large tool-result messages in-place.
-    """
-    if max_messages is None:
-        max_messages = MAX_HISTORY
-    # Always keep the system prompt at index 0
-    if len(history) <= 1:
-        return history
-    system = history[0] if history[0].get("role") == "system" else None
-    msgs = history[1:] if system else history
-
-    # Truncate oversized tool results in-place to save memory
-    for msg in msgs:
-        if isinstance(msg, dict) and msg.get("role") == "tool":
-            content = msg.get("content", "")
-            if len(content) > MAX_OUTPUT:
-                msg["content"] = content[:MAX_OUTPUT] + "\n...[truncated]"
-
-    # Keep only the last max_messages
-    if len(msgs) > max_messages:
-        trimmed = msgs[-max_messages:]
-        if system:
-            return [system] + trimmed
-        return trimmed
-    return history
-
-
-# ==================== JULES-STYLE RETRO GRADIENT BANNER ====================
-
-GEMBOT_LOGO = [
-    " ██████╗ ███████╗███╗   ███╗██████╗  ██████╗ ████████╗",
-    "██╔════╝ ██╔════╝████╗ ████║██╔══██╗██╔═══██╗╚══██╔══╝",
-    "██║  ███╗█████╗  ██╔████╔██║██████╔╝██║   ██║   ██║   ",
-    "██║   ██║██╔══╝  ██║╚██╔╝██║██╔══██╗██║   ██║   ██║   ",
-    "╚██████╔╝███████╗██║ ╚═╝ ██║██████╔╝╚██████╔╝   ██║   ",
-    " ╚═════╝ ╚══════╝╚═╝     ╚═╝╚═════╝  ╚═════╝    ╚═╝   ",
-]
-
-GRADIENT_COLORS = [
-    "#E0C3FC",
-    "#C8B6FF",
-    "#B8C0FF",
-    "#9D4EDD",
-    "#7B2CBF",
-    "#5A189A",
-]
-
-
-def print_banner() -> None:
-    """Print the stunning Jules-style shaded gradient banner and metadata."""
-    console.print()
-    for i, line in enumerate(GEMBOT_LOGO):
-        color = GRADIENT_COLORS[i % len(GRADIENT_COLORS)]
-        console.print(f"[{color}]{line}[/{color}]")
-
-    cwd = os.getcwd()
-    git_branch = "unknown/unknown"
+def ask_user_confirmation(action_desc: str) -> bool:
+    """Prompt user for confirmation before performing destructive actions."""
+    if AUTO_CONFIRM:
+        return True
     try:
-        r = subprocess.run("git branch --show-current", shell=True, capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            git_branch = f"git:{r.stdout.strip()}"
+        console.print(f"\n[bold yellow]⚠ SAFETY GATE:[/bold yellow] [bold white]{action_desc}[/bold white]")
+        ans = input("  Proceed? (y/n, default n): ").strip().lower()
+        return ans in ("y", "yes")
     except Exception:
-        pass
-
-    console.print()
-    console.print(f"[bold bright_magenta]Welcome to GEMBOT CLI![/bold bright_magenta]")
-    console.print(f"[dim]v1.0.0 • Autonomous Multi-Tool AI Agent[/dim]")
-    console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
-    console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
-    console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: Drag & drop / paste file paths, copy screenshots to clipboard & use [bold cyan]/paste[/bold cyan], or type [bold cyan]/models[/bold cyan].[/dim]")
-    console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime while running to immediately halt the agent.[/dim]")
-    console.print()
+        return False
 
 
-
-# ==================== MULTIMODAL / FILE ATTACHMENT EXTRACTOR ====================
+# ==================== FILESYSTEM & OS TOOLS ====================
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 DOC_EXTENSIONS = {".pdf", ".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".csv"}
@@ -217,7 +142,6 @@ def get_clipboard_image() -> dict:
     try:
         from PIL import ImageGrab
         im = ImageGrab.grabclipboard()
-        # Handle list of file paths from clipboard (when copying a file in Windows Explorer)
         if isinstance(im, list):
             for file_path in im:
                 res = extract_content_from_path(str(file_path))
@@ -225,7 +149,6 @@ def get_clipboard_image() -> dict:
                     return res
             return {}
 
-        # Handle PIL Image directly in clipboard (screenshots / copied images)
         if im is not None and hasattr(im, "save"):
             buffered = io.BytesIO()
             im.save(buffered, format="PNG")
@@ -247,7 +170,6 @@ def extract_content_from_path(raw_path: str) -> dict:
 
     ext = p.suffix.lower()
 
-    # Image file: return image bytes for vision models
     if ext in IMAGE_EXTENSIONS:
         try:
             with open(p, "rb") as f:
@@ -256,7 +178,6 @@ def extract_content_from_path(raw_path: str) -> dict:
         except Exception:
             return {}
 
-    # PDF file: extract textual contents
     if ext == ".pdf":
         try:
             from pypdf import PdfReader
@@ -271,7 +192,6 @@ def extract_content_from_path(raw_path: str) -> dict:
         except Exception as e:
             return {"type": "error", "content": f"Could not read PDF: {e}"}
 
-    # Text / Code file / Log file
     if ext in DOC_EXTENSIONS or ext in {".log", ".env", ".toml", ".yaml", ".sh", ".bat", ".cmd"} or ext == "":
         try:
             with open(p, "r", encoding="utf-8", errors="replace") as f:
@@ -281,8 +201,6 @@ def extract_content_from_path(raw_path: str) -> dict:
 
     return {}
 
-
-# ==================== FILESYSTEM & OS TOOLS ====================
 
 def list_files(path: str = ".") -> str:
     """List files and folders in a directory with file types.
@@ -296,7 +214,7 @@ def list_files(path: str = ".") -> str:
             return f"Error: Directory '{target}' does not exist."
         items = sorted(os.listdir(target))
         if not items:
-            return "(directory is empty)"
+            return f"Directory '{target}' is empty."
         formatted = []
         for item in items:
             full = os.path.join(target, item)
@@ -309,17 +227,17 @@ def list_files(path: str = ".") -> str:
 
 
 def move_file(source: str, destination: str) -> str:
-    """Move or rename a file or folder. Creates destination folder if needed.
-
-    Args:
-        source: Existing file or folder path
-        destination: New path (file path or target folder)
-    """
+    """Move or rename a file or folder. Creates destination folder if needed."""
     try:
         dest = _p(destination)
         src = _p(source)
         if not os.path.exists(src):
             return f"Error: Source '{src}' not found."
+        if os.path.exists(dest) and os.path.isfile(dest):
+            if not ask_user_confirmation(f"Overwrite existing destination file '{dest}'?"):
+                return f"Action cancelled by user (move_file aborted)."
+            backup_file(dest)
+
         if not os.path.splitext(dest)[1] and not os.path.exists(dest):
             os.makedirs(dest, exist_ok=True)
         else:
@@ -331,11 +249,7 @@ def move_file(source: str, destination: str) -> str:
 
 
 def read_file(path: str) -> str:
-    """Read a text or code file.
-
-    Args:
-        path: Path to the file to inspect
-    """
+    """Read a text or code file."""
     try:
         full = _p(path)
         if not os.path.exists(full):
@@ -347,20 +261,18 @@ def read_file(path: str) -> str:
 
 
 def _sanitize_json(content: str) -> str:
-    """Strip JS-style comments and trailing commas from JSON content to make it valid."""
-    # Remove single-line comments (// ...)
+    """Strip JS-style comments and trailing commas from JSON content."""
     lines = content.splitlines()
     cleaned = []
-    in_block_comment = False
+    in_block = False
     for line in lines:
-        if in_block_comment:
+        if in_block:
             end_idx = line.find("*/")
             if end_idx != -1:
                 line = line[end_idx + 2:]
-                in_block_comment = False
+                in_block = False
             else:
                 continue
-        # Remove block comments /* ... */ on a single line
         while "/*" in line:
             start = line.index("/*")
             end = line.find("*/", start + 2)
@@ -368,14 +280,11 @@ def _sanitize_json(content: str) -> str:
                 line = line[:start] + line[end + 2:]
             else:
                 line = line[:start]
-                in_block_comment = True
+                in_block = True
                 break
-        # Remove single-line comments (but not inside strings)
-        # Simple approach: remove // only if not inside a quoted string
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
-        # Handle inline // comments (naive but effective for model output)
         in_string = False
         escape = False
         cut_at = -1
@@ -397,25 +306,19 @@ def _sanitize_json(content: str) -> str:
             cleaned.append(line)
 
     result = "\n".join(cleaned)
-
-    # Remove trailing commas before } or ]
     result = re.sub(r',\s*([}\]])', r'\1', result)
-
     return result
 
 
 def write_file(path: str, content: str) -> str:
-    """Write or overwrite text or code to a file. Automatically creates folders.
-
-    Args:
-        path: Destination file path (e.g. C:\\Users\\Subhash\\Desktop\\assignment.py)
-        content: Complete code or text content to write
-    """
+    """Write or overwrite text or code to a file. Automatically creates backup if overwriting."""
     try:
         full = _p(path)
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
 
-        # Auto-fix JSON files: strip comments, trailing commas, validate
+        if os.path.exists(full):
+            backup_file(full)
+
         corrections = []
         if full.lower().endswith(".json"):
             try:
@@ -426,10 +329,8 @@ def write_file(path: str, content: str) -> str:
                     json.loads(sanitized)
                     content = sanitized
                     corrections.append("auto-stripped comments and/or trailing commas from JSON")
-                    console.print(f"  [bold yellow]🔧 AUTO-FIX:[/bold yellow] [dim]Stripped invalid comments/trailing commas from JSON file[/dim]")
                 except json.JSONDecodeError as je:
                     corrections.append(f"WARNING: JSON is still invalid after cleanup: {je}")
-                    console.print(f"  [bold red]⚠ JSON VALIDATION:[/bold red] [dim]File has JSON syntax errors — model should fix: {je}[/dim]")
 
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
@@ -443,28 +344,26 @@ def write_file(path: str, content: str) -> str:
 
 
 def run_command(command: str) -> str:
-    """Run a shell command autonomously (e.g. python script.py, npm test, pip install).
+    """Run a shell command autonomously with safety checks and timeout."""
+    blocked = CONFIG.get("blocked_commands", [])
+    is_d, desc = is_dangerous_command(command, blocked)
+    if is_d:
+        if not ask_user_confirmation(f"Command flagged as dangerous ({desc}): '{command}'"):
+            return f"Action cancelled by safety gate: {desc}"
 
-    Args:
-        command: The shell command line to execute
-    """
     console.print(f"  [bright_black]⚡ [gembot cmd]:[/bright_black] [bold yellow]{command}[/bold yellow]")
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
         out = (r.stdout + r.stderr).strip()
         return _cut(out or f"Executed successfully (exit code {r.returncode})")
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out after 120 seconds"
+        return f"Error: Command timed out after {COMMAND_TIMEOUT} seconds"
     except Exception as e:
         return f"Error: {e}"
 
 
 def open_app(name_or_path: str) -> str:
-    """Open an application, file, directory, or website in Windows.
-
-    Args:
-        name_or_path: App name (e.g. notepad, code, chrome), directory, or URL
-    """
+    """Open an application, file, directory, or website in Windows."""
     try:
         target = name_or_path.strip()
         if os.path.exists(_p(target)):
@@ -476,15 +375,8 @@ def open_app(name_or_path: str) -> str:
         return f"Error: {e}"
 
 
-# ==================== WEB BROWSING & RESEARCH TOOLS ====================
-
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web using DuckDuckGo to find information, research topics, or find assignment solutions.
-
-    Args:
-        query: Search keywords or question
-        max_results: Number of results to return (default 5)
-    """
+    """Search the web using DuckDuckGo to find information, research topics, or find assignment solutions."""
     try:
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:
@@ -503,11 +395,7 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 def browse_webpage(url: str) -> str:
-    """Browse a web page using a headless browser, extracting the clean text and content.
-
-    Args:
-        url: The web URL to visit (e.g. https://en.wikipedia.org/... or documentation)
-    """
+    """Browse a web page using headless browser or fast HTTP, extracting clean text."""
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -522,7 +410,6 @@ def browse_webpage(url: str) -> str:
             if len(text) > 100:
                 return _cut(f"Page Title: {soup.title.string if soup.title else 'No Title'}\n\nContent:\n{text}")
 
-        # Fallback to Playwright headless browser for JS-rendered pages
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -536,17 +423,8 @@ def browse_webpage(url: str) -> str:
         return f"Error browsing webpage '{url}': {e}"
 
 
-# ==================== GIT & GITHUB AUTOMATION TOOLS ====================
-
 def git_commit_and_push(repo_path: str, commit_message: str, branch: str = "main", remote_url: str = "") -> str:
-    """Stage all changes, commit them with a message, and push to GitHub repository.
-
-    Args:
-        repo_path: Local folder of the git repository (e.g. C:\\Users\\Subhash\\Desktop\\myproject)
-        commit_message: Description of the changes made
-        branch: Git branch name (default 'main')
-        remote_url: Optional remote GitHub URL if repo needs to be linked (e.g. https://github.com/user/repo.git)
-    """
+    """Stage all changes, commit them with a message, and push to GitHub repository."""
     try:
         path = _p(repo_path)
         if not os.path.exists(path):
@@ -573,20 +451,52 @@ def git_commit_and_push(repo_path: str, commit_message: str, branch: str = "main
         return f"Git error: {e}"
 
 
+# ==================== TOOL REGISTRY ====================
+
 TOOLS = {
-    f.__name__: f
-    for f in (
-        list_files,
-        move_file,
-        read_file,
-        write_file,
-        run_command,
-        open_app,
-        web_search,
-        browse_webpage,
-        git_commit_and_push,
-    )
+    # Core filesystem
+    "write_file": write_file,
+    "read_file": read_file,
+    "list_files": list_files,
+    "move_file": move_file,
+    "copy_file": copy_file,
+    "delete_file": delete_file,
+    "make_dir": make_dir,
+    "file_info": file_info,
+    "edit_file": edit_file,
+    "search_files": search_files,
+    "run_tests": run_tests,
+    # Execution & system
+    "run_command": run_command,
+    "open_app": open_app,
+    "system_info": system_info,
+    "list_processes": list_processes,
+    "kill_process": kill_process,
+    "take_screenshot": take_screenshot,
+    "clipboard_read": clipboard_read,
+    "clipboard_write": clipboard_write,
+    "download_file": download_file,
+    "http_request": http_request,
+    # Research & web
+    "web_search": web_search,
+    "browse_webpage": browse_webpage,
+    "git_commit_and_push": git_commit_and_push,
+    # Documents
+    "create_docx": create_docx,
+    "read_docx": read_docx,
+    "create_excel": create_excel,
+    "read_excel": read_excel,
+    # Memory
+    "remember_fact": remember_fact,
+    "recall_fact": recall_fact,
 }
+
+# Load any third-party plugins dynamically
+try:
+    plugins = load_plugins()
+    TOOLS.update(plugins)
+except Exception:
+    pass
 
 
 def ensure_ollama_running() -> bool:
@@ -624,17 +534,11 @@ def ensure_ollama_running() -> bool:
 
 
 def _infer_filename_from_content(content: str, history: list) -> str | None:
-    """Try to infer a filename from file content patterns and conversation history.
-
-    Returns a relative filename string (e.g. 'app/api/chat/route.js') or None.
-    """
     if not content or not content.strip():
         return None
-
-    first_lines = content[:1500]  # examine top of file
+    first_lines = content[:1500]
     first_line = content.split("\n", 1)[0].strip()
 
-    # ── 1. Explicit filename comment at the top (e.g. "// app/api/chat/route.js") ──
     header_match = re.match(
         r'^(?://|#|/\*|<!--)\s*(?:file(?:name)?:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)',
         first_line,
@@ -643,147 +547,141 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
     if header_match:
         return header_match.group(1).replace("\\", "/")
 
-    # ── 2. Shebang line ──
     if first_line.startswith("#!"):
         if "python" in first_line:
             return "script.py"
         if "node" in first_line:
             return "script.js"
-        if "bash" in first_line or "sh" in first_line:
-            return "script.sh"
 
-    # ── 3. Well-known config / metadata files (check content signatures) ──
-    config_signatures = [
-        (r'"name"\s*:', r'"version"\s*:', "package.json"),
-        (r'"compilerOptions"\s*:', None, "tsconfig.json"),
-        (r'"scripts"\s*:', r'"dependencies"\s*:', "package.json"),
-        (r'"extends"\s*:', r'"compilerOptions"\s*:', "tsconfig.json"),
-    ]
-    for sig1, sig2, fname in config_signatures:
-        if re.search(sig1, first_lines):
-            if sig2 is None or re.search(sig2, first_lines):
-                return fname
-
-    # Known text config files
-    if first_line.startswith("# ") and "gitignore" in first_lines[:200].lower():
-        return ".gitignore"
-    if re.match(r'^(node_modules|\.next|\.env|dist|build)', first_line) and "\n" in content:
-        # Looks like a .gitignore listing
-        return ".gitignore"
-
-    # ── 4. Language-specific import/syntax patterns ──
     lang_patterns = [
-        # Python
         (r'^(import |from .+ import |def |class )', ".py"),
-        # JavaScript / TypeScript / JSX / TSX
-        (r'^(import .+ from |export |const |let |var |function |module\.exports)', ".js"),
+        (r'^(import .+ from |export |const |let |var |function )', ".js"),
         (r'(React|useState|useEffect|jsx|tsx)', ".jsx"),
-        (r'^(import .+ from |export )', ".ts"),  # fallback
-        # HTML
         (r'^<!DOCTYPE html|^<html|^<head|^<body', ".html"),
-        # CSS
-        (r'^(@import |@charset |@media |\*\s*\{|body\s*\{|html\s*\{|:root\s*\{|\.[\w-]+\s*\{)', ".css"),
-        # Markdown
+        (r'^(@import |@charset |body\s*\{|html\s*\{|\.[\w-]+\s*\{)', ".css"),
         (r'^# .+', ".md"),
-        # YAML
-        (r'^[\w-]+:\s*\n', ".yml"),
     ]
-
     detected_ext = None
     for pattern, ext in lang_patterns:
         if re.search(pattern, first_lines, re.MULTILINE):
             detected_ext = ext
             break
 
-    # ── 5. Search conversation history for recently mentioned filenames ──
-    mentioned_files = []
-    for msg_entry in reversed(history[-10:]):  # look at recent messages
-        msg_content = ""
-        if isinstance(msg_entry, dict):
-            msg_content = msg_entry.get("content", "") or ""
-        elif hasattr(msg_entry, "content"):
-            msg_content = msg_entry.content or ""
-
-        # Find file path mentions like "app/api/chat/route.js" or "README.md"
-        file_refs = re.findall(
-            r'(?:(?:[\w./\\-]+/)?[\w.-]+\.(?:js|jsx|ts|tsx|py|html|css|json|md|txt|yml|yaml|toml|cfg|sh|bat|cmd|env))',
-            msg_content,
-        )
-        mentioned_files.extend(file_refs)
-
-    # Try to match a mentioned file with the detected extension
-    if mentioned_files and detected_ext:
-        for f in mentioned_files:
-            if f.endswith(detected_ext):
-                return f
-
-    # If we detected an extension but no matching history file, use a sensible default
     if detected_ext:
         defaults = {
             ".py": "main.py",
             ".js": "index.js",
             ".jsx": "App.jsx",
-            ".ts": "index.ts",
-            ".tsx": "App.tsx",
             ".html": "index.html",
             ".css": "styles.css",
             ".md": "README.md",
-            ".yml": "config.yml",
         }
         return defaults.get(detected_ext, f"output{detected_ext}")
-
-    # ── 6. Check for Next.js specific patterns ──
-    if "NextResponse" in first_lines or "next/server" in first_lines:
-        return "app/api/route.js"
-    if "'use client'" in first_lines or '"use client"' in first_lines:
-        return "app/page.jsx"
 
     return None
 
 
+# ==================== JULES-STYLE RETRO GRADIENT BANNER ====================
+
+GEMBOT_LOGO = [
+    r" ██████╗ ███████╗███╗   ███╗██████╗  ██████╗ ████████╗",
+    r"██╔════╝ ██╔════╝████╗ ████║██╔══██╗██╔═══██╗╚══██╔══╝",
+    r"██║  ███╗█████╗  ██╔████╔██║██████╔╝██║   ██║   ██║   ",
+    r"██║   ██║██╔══╝  ██║╚██╔╝██║██╔══██╗██║   ██║   ██║   ",
+    r"╚██████╔╝███████╗██║ ╚═╝ ██║██████╔╝╚██████╔╝   ██║   ",
+    r" ╚═════╝ ╚══════╝╚═╝     ╚═╝╚═════╝  ╚═════╝    ╚═╝   ",
+]
+
+GRADIENT_COLORS = [
+    "#E0C3FC",
+    "#C8B6FF",
+    "#B8C0FF",
+    "#9D4EDD",
+    "#7B2CBF",
+    "#5A189A",
+]
+
+
+def print_banner() -> None:
+    console.print()
+    for i, line in enumerate(GEMBOT_LOGO):
+        color = GRADIENT_COLORS[i % len(GRADIENT_COLORS)]
+        console.print(f"[{color}]{line}[/{color}]")
+
+    cwd = os.getcwd()
+    git_branch = "unknown/unknown"
+    try:
+        r = subprocess.run("git branch --show-current", shell=True, capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            git_branch = f"git:{r.stdout.strip()}"
+    except Exception:
+        pass
+
+    console.print()
+    console.print(f"[bold bright_magenta]Welcome to GEMBOT CLI![/bold bright_magenta]")
+    console.print(f"[dim]v2.0.0 • Autonomous Multi-Tool AI Agent with Self-Healing Tools[/dim]")
+    console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
+    console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
+    console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
+    console.print(f"[dim]Tip: Drag & drop files, copy screenshots & type [bold cyan]/paste[/bold cyan], use [bold cyan]/undo[/bold cyan], [bold cyan]/auto[/bold cyan], [bold cyan]/help[/bold cyan].[/dim]")
+    console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime to immediately abort any running action.[/dim]")
+    console.print()
+
+
 def run_task(instruction: str, history: list, images: list = None) -> None:
+    global STOP_REQUESTED, MODEL
+    STOP_REQUESTED = False
+
     msg = {"role": "user", "content": instruction}
     if images:
         msg["images"] = images
     history.append(msg)
 
     for step in range(MAX_STEPS):
-        # Trim history before each call to prevent memory buildup
-        history[:] = trim_history(history)
+        if STOP_REQUESTED:
+            console.print("\n[bold red]🛑 [gembot]: Execution cancelled by user.[/bold red]\n")
+            return
+
+        # Auto-summarize history if getting long
+        history[:] = auto_summarize_history(history, max_messages=MAX_HISTORY)
         gc.collect()
 
-        # Dynamic Live Status Spinner
-        with Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console) as status:
+        with Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console):
             try:
-                # Request Ollama response
                 resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
             except MemoryError:
                 console.print("\n[bold yellow]⚠ Memory pressure detected — trimming context and retrying...[/bold yellow]")
-                # Aggressively trim to half the normal limit
-                history[:] = trim_history(history, max_messages=MAX_HISTORY // 2)
+                history[:] = auto_summarize_history(history, max_messages=MAX_HISTORY // 2)
                 gc.collect()
                 try:
                     resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
-                except (MemoryError, Exception) as e2:
-                    console.print(f"\n[bold red][!] Fatal memory error:[/bold red] {e2}\n[dim]Try a smaller model (e.g. /models yi-coder:1.5b) or reduce MAX_STEPS/MAX_OUTPUT in .env[/dim]")
+                except Exception as e2:
+                    console.print(f"\n[bold red][!] Memory Error:[/bold red] {e2}")
                     return
             except KeyboardInterrupt:
                 console.print("\n[bold red]🛑 [gembot]: Execution STOPPED by user (Ctrl+C).[/bold red]\n")
-                history.append({"role": "assistant", "content": "[Execution stopped by user]"})
                 return
             except Exception as e:
-                console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}' in .env[/dim]")
-                return
+                # Model fallback handling
+                fallback = CONFIG.get("fallback_model", "qwen2.5-coder:3b")
+                if fallback != MODEL:
+                    console.print(f"\n[bold yellow]⚠ Model '{MODEL}' failed. Auto-falling back to '{fallback}'...[/bold yellow]")
+                    MODEL = fallback
+                    try:
+                        resp = ollama.chat(model=MODEL, messages=history, tools=list(TOOLS.values()))
+                    except Exception as e_fb:
+                        console.print(f"[bold red][!] Fallback also failed:[/bold red] {e_fb}")
+                        return
+                else:
+                    console.print(f"\n[bold red][!] Ollama Error:[/bold red] {e}\n[dim]Verify model '{MODEL}'[/dim]")
+                    return
 
         msg = resp.message
         history.append(msg)
 
-        # If model answered with text only (no tool calls)
+        # Fallback raw-JSON tool call parsing
         if not msg.tool_calls:
             reply = msg.content.strip() if msg.content else ""
-
-            # Check if model outputted raw JSON representing a tool call
-            # e.g.: {"name": "write_file", "arguments": {...}} or ```json {"name": ...} ```
             extracted_tool_call = None
             clean_reply = reply
             if "```" in clean_reply:
@@ -813,38 +711,34 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             if extracted_tool_call:
                 msg.tool_calls = [extracted_tool_call]
             else:
-                # Check if this looks like a final summary (short, no file/command mentions)
                 is_final = (
                     step >= 1
                     and len(reply) < 800
-                    and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan", "first,", "next,"])
+                    and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan"])
                 )
-
                 if is_final or step == MAX_STEPS - 1:
-                    # Genuine final answer — display it
                     if reply:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
                         console.print()
                     return
                 else:
-                    # Model described instead of doing — kick it back into action
                     if reply:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
                     console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]Model planned but didn't act — pushing it to execute now (step {step+2}/{MAX_STEPS})...[/dim]")
-                    # Force the model to execute immediately
                     history.append({
                         "role": "user",
-                        "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the first file or run the first command RIGHT NOW. Do not output any more text — just call a tool."
+                        "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the file or run the command RIGHT NOW."
                     })
                     continue
 
-        # If model generated actions / code / file creations
-        # Track consecutive empty-path retries for this step
-        empty_path_retries = getattr(run_task, '_empty_path_retries', 0)
-
+        # Execute Tools
         for call in msg.tool_calls:
+            if STOP_REQUESTED:
+                console.print("\n[bold red]🛑 [gembot]: Action aborted by user.[/bold red]\n")
+                return
+
             name = call.function.name
             args = dict(call.function.arguments)
 
@@ -852,40 +746,14 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 path = args.get("path", "").strip()
                 content = args.get("content", "")
                 if not path:
-                    # ── Attempt to infer the filename from content ──
                     inferred = _infer_filename_from_content(content, history)
                     if inferred:
                         path = os.path.join(os.getcwd(), inferred)
                         args["path"] = path
-                        console.print(f"\n  [bold bright_green]🧠 AUTO-INFERRED PATH:[/bold bright_green] [dim]Model omitted filename — inferred as[/dim] [bold white]{path}[/bold white]")
+                        console.print(f"\n  [bold bright_green]🧠 AUTO-INFERRED PATH:[/bold bright_green] [dim]Inferred as[/dim] [bold white]{path}[/bold white]")
                     else:
-                        empty_path_retries += 1
-                        run_task._empty_path_retries = empty_path_retries
-                        if empty_path_retries >= 3:
-                            # Hard stop: generate a fallback filename and write anyway
-                            fallback = os.path.join(os.getcwd(), f"gembot_output_{int(time.time())}.txt")
-                            args["path"] = fallback
-                            path = fallback
-                            console.print(f"\n  [bold yellow]⚠ MAX RETRIES HIT:[/bold yellow] [dim]Could not infer filename after {empty_path_retries} attempts — saving as[/dim] [bold white]{fallback}[/bold white]")
-                            run_task._empty_path_retries = 0
-                        else:
-                            console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING ({empty_path_retries}/3):[/bold yellow] [dim]Model forgot filename — sending correction to retry...[/dim]")
-                            history.append({"role": "tool", "tool_name": name, "content": "ERROR: 'path' argument was empty or missing. You MUST provide a valid file path."})
-                            # Build a hint from content to help the model
-                            content_hint = content[:300].replace('\n', ' ').strip()
-                            history.append({
-                                "role": "user",
-                                "content": (
-                                    "CRITICAL ERROR: Your last write_file call had an EMPTY 'path'. "
-                                    "You MUST provide the 'path' argument. "
-                                    f"The content starts with: {content_hint}\n"
-                                    "Based on this content, determine the correct filename and call write_file "
-                                    "with BOTH 'path' and 'content' arguments RIGHT NOW."
-                                )
-                            })
-                            break  # break out of tool_calls loop to let the model retry
-                else:
-                    run_task._empty_path_retries = 0  # reset on success
+                        path = os.path.join(os.getcwd(), f"output_{int(time.time())}.txt")
+                        args["path"] = path
 
                 console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
                 code_lines = content.splitlines()
@@ -893,48 +761,46 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 if len(code_lines) > 20:
                     preview += f"\n... [+{len(code_lines) - 20} more lines written to {path}]"
                 console.print(Panel(preview, title=f"[dim cyan]Live Code Generator: {os.path.basename(path)}[/dim cyan]", border_style="cyan"))
+
+            elif name == "edit_file":
+                target_p = args.get("path", "")
+                console.print(f"\n  [bold bright_yellow]✏ PRECISION PATCH EDIT:[/bold bright_yellow] [bold white]{target_p}[/bold white]")
+
             elif name in ("web_search", "browse_webpage"):
-                query_or_url = list(args.values())[0] if args else ""
-                console.print(f"\n  [bold bright_blue]🌐 LIVE WEB RESEARCH:[/bold bright_blue] [white]{name} -> {query_or_url}[/white]")
+                val = list(args.values())[0] if args else ""
+                console.print(f"\n  [bold bright_blue]🌐 LIVE WEB RESEARCH:[/bold bright_blue] [white]{name} -> {val}[/white]")
+
             elif name == "run_command":
                 cmd = args.get("command", "")
                 console.print(f"\n  [bold bright_yellow]⚡ EXECUTING COMMAND:[/bold bright_yellow] [bold yellow]{cmd}[/bold yellow]")
+
             elif name == "git_commit_and_push":
                 msg_txt = args.get("commit_message", "")
                 console.print(f"\n  [bold bright_magenta]🐙 GITHUB AUTOMATION:[/bold bright_magenta] [white]{msg_txt}[/white]")
+
             else:
                 console.print(f"\n  [dim cyan]⚡ [tool] {name}({args})[/dim cyan]")
 
-            # Run the tool with live status
             with Status(f"[dim]Running action {name}...[/dim]", spinner="dots", console=console):
                 try:
                     fn = TOOLS.get(name)
                     if fn is None:
-                        result = f"Error: unknown tool '{name}'. Available tools: {', '.join(TOOLS.keys())}. Call a valid tool now."
-                        console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Unknown tool '{name}' — sending correction...[/dim]")
+                        result = f"Error: unknown tool '{name}'. Available: {', '.join(TOOLS.keys())}."
                     else:
                         result = fn(**args)
                 except KeyboardInterrupt:
                     console.print(f"\n[bold red]🛑 [gembot]: Action '{name}' aborted by user.[/bold red]\n")
-                    result = "User cancelled this action."
+                    result = "User aborted this action via Ctrl+C."
                     history.append({"role": "tool", "tool_name": name, "content": str(result)})
                     return
                 except TypeError as e:
-                    # Model called a tool with missing/wrong arguments — auto-recover
-                    result = (
-                        f"Error: Tool '{name}' called with invalid arguments: {e}. "
-                        f"Args received: {args}. "
-                        f"Fix the arguments and call '{name}' again immediately."
-                    )
-                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]Bad args for {name} — sending correction to retry...[/dim]")
+                    result = f"Error: Tool '{name}' invalid arguments: {e}. Args: {args}."
                 except Exception as e:
-                    result = (
-                        f"Error executing tool '{name}': {e}. "
-                        f"Fix the issue and try again."
-                    )
-                    console.print(f"\n  [bold yellow]⚠ AUTO-RECOVERING:[/bold yellow] [dim]{name} failed — sending correction to retry...[/dim]")
+                    result = f"Error executing tool '{name}': {e}."
 
-            # Print action execution result
+            # Log activity to session log
+            log_session_activity(name, args, str(result))
+
             if name != "write_file":
                 short_result = str(result)[:300] + ("..." if len(str(result)) > 300 else "")
                 console.print(f"     [dim]↳ Result:[/dim] [bright_black]{short_result}[/bright_black]")
@@ -944,27 +810,21 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
     console.print("\n[dim][gembot] Completed maximum autonomous steps for this task.[/dim]\n")
 
 
-
-
 def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
     """Inspect input for paths to images, PDFs, files, or clipboard paste and attach their contents."""
     images = []
     text_additions = []
     handled_paths = set()
 
-    # 1. Check for clipboard image if user types /paste or clipboard mentions
     trimmed = raw_input.strip()
     is_paste_command = trimmed.lower() in {"/paste", "paste", "/clip", "clip"}
 
-    # 2. Extract potential paths:
-    # Handles Windows absolute paths (C:\... or "C:\..."), WSL/Unix paths (/...),
-    # and local relative file paths (.e.g error.png, ./logs/app.log, "screenshots\bug.jpg")
     patterns = [
-        r'(?:&?\s*["\']([A-Za-z]:\\[^"\'<>|]+)["\'])',  # quoted Win path: "C:\path\to\file.ext"
-        r'(?:&?\s*["\']([.]{1,2}/[^"\'<>|]+|/[^"\'<>|]+)["\'])',  # quoted relative/posix: "./file.ext"
-        r'(?:[A-Za-z]:\\[^\s"\'<>|]+(?:\.[A-Za-z0-9_-]+)?)',  # unquoted Win path: C:\path\to\file.ext
-        r'(?:(?:\.{1,2}[/\\]|[a-zA-Z0-9_-]+[/\\])[^\s"\'<>|]+\.[a-zA-Z0-9]+)',  # relative path with dir: subdir/file.png
-        r'(?:[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|webp|bmp|gif|pdf|txt|log|py|js|json|html|css|md|csv|env))',  # standalone filename
+        r'(?:&?\s*["\']([A-Za-z]:\\[^"\'<>|]+)["\'])',
+        r'(?:&?\s*["\']([.]{1,2}/[^"\'<>|]+|/[^"\'<>|]+)["\'])',
+        r'(?:[A-Za-z]:\\[^\s"\'<>|]+(?:\.[A-Za-z0-9_-]+)?)',
+        r'(?:(?:\.{1,2}[/\\]|[a-zA-Z0-9_-]+[/\\])[^\s"\'<>|]+\.[a-zA-Z0-9]+)',
+        r'(?:[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|webp|bmp|gif|pdf|txt|log|py|js|json|html|css|md|csv|env))',
     ]
 
     found_candidates = []
@@ -977,7 +837,6 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
     for p_str in found_candidates:
         res = extract_content_from_path(p_str)
         if not res and not os.path.isabs(p_str):
-            # Check relative to current working directory
             res = extract_content_from_path(os.path.join(os.getcwd(), p_str))
 
         if res and res.get("path") not in handled_paths:
@@ -989,16 +848,15 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
                 text_additions.append(f"\n[Attached File Contents of {res['path']}]:\n{res['content']}\n")
                 console.print(f"[dim green]  📎 Read & Attached Document: {res['path']}[/dim green]")
 
-    # 3. If explicit /paste command or if no paths found, check clipboard for image
     if is_paste_command or not handled_paths:
         clip_res = get_clipboard_image()
         if clip_res:
             if clip_res.get("type") == "image":
                 images.append(clip_res["data"])
-                console.print(f"[bold bright_green]  📎 Attached Image directly from Clipboard (Screenshot/Copied Image)[/bold bright_green]")
+                console.print(f"[bold bright_green]  📎 Attached Image directly from Clipboard[/bold bright_green]")
             elif clip_res.get("type") == "text" and is_paste_command:
                 text_additions.append(f"\n[Attached File Contents of {clip_res['path']}]:\n{clip_res['content']}\n")
-                console.print(f"[bold bright_green]  📎 Read & Attached File from Clipboard: {clip_res['path']}[/bold bright_green]")
+                console.print(f"[bold bright_green]  📎 Attached File from Clipboard: {clip_res['path']}[/bold bright_green]")
 
     full_prompt = raw_input
     if is_paste_command:
@@ -1012,6 +870,7 @@ def parse_multimodal_input(raw_input: str) -> tuple[str, list]:
 
 def select_model_interactive() -> str:
     """List available Ollama models in a rich table and allow the user to select one."""
+    global MODEL
     ensure_ollama_running()
     try:
         res = ollama.list()
@@ -1074,16 +933,16 @@ def select_model_interactive() -> str:
                 chosen_name = item["name"]
                 break
         if not chosen_name:
-            chosen_name = choice  # Allow setting custom tag or model name
+            chosen_name = choice
 
-    save_active_model(chosen_name)
+    set_active_model(chosen_name)
+    MODEL = chosen_name
     console.print(f"[bold bright_green]✓ Active model switched to:[/bold bright_green] [bold white]{chosen_name}[/bold white]")
-    console.print(f"[dim]Saved configuration to central agent config ({GLOBAL_ENV}).[/dim]\n")
     return chosen_name
 
 
 def main() -> None:
-    global MODEL
+    global MODEL, AUTO_CONFIRM
     ensure_ollama_running()
     print_banner()
 
@@ -1092,11 +951,11 @@ def main() -> None:
         direct_task = " ".join(args).strip()
         console.print(f"[bold cyan]Task:[/bold cyan] {direct_task}")
         processed_prompt, imgs = parse_multimodal_input(direct_task)
-        history = [{"role": "system", "content": SYSTEM}]
+        history = [{"role": "system", "content": build_system_prompt()}]
         run_task(processed_prompt, history, imgs)
         return
 
-    history = [{"role": "system", "content": SYSTEM}]
+    history = [{"role": "system", "content": build_system_prompt()}]
 
     custom_style = Style.from_dict({
         'prompt': '#FFB703 bold',
@@ -1114,29 +973,96 @@ def main() -> None:
         if task.lower() in {"exit", "quit", "q", "/exit"}:
             console.print("[bright_magenta]Exiting GEMBOT. Have a great day![/bright_magenta]")
             break
+
         if task.lower() in {"clear", "/clear"}:
-            history = [{"role": "system", "content": SYSTEM}]
+            history = [{"role": "system", "content": build_system_prompt()}]
             console.clear()
             print_banner()
             console.print("[dim cyan]Conversation memory cleared.[/dim cyan]")
             continue
+
+        if task.lower() in {"/undo", "undo"}:
+            success, msg = undo_last_change()
+            color = "bright_green" if success else "yellow"
+            console.print(f"[{color}]{msg}[/{color}]")
+            continue
+
+        if task.lower().startswith("/auto"):
+            parts = task.split(maxsplit=1)
+            if len(parts) > 1 and parts[1].strip().lower() in ("on", "1", "true"):
+                AUTO_CONFIRM = True
+                console.print("[bold bright_green]✓ Auto-confirmation mode enabled (prompts skipped).[/bold bright_green]")
+            elif len(parts) > 1 and parts[1].strip().lower() in ("off", "0", "false"):
+                AUTO_CONFIRM = False
+                console.print("[bold yellow]✓ Confirmation gate active (asking y/n for dangerous actions).[/bold yellow]")
+            else:
+                state = "ON (auto-confirm)" if AUTO_CONFIRM else "OFF (asks confirmation)"
+                console.print(f"[dim]Auto mode is currently:[/dim] [bold cyan]{state}[/bold cyan] [dim](usage: /auto on|off)[/dim]")
+            continue
+
+        if task.lower().startswith("/save"):
+            parts = task.split(maxsplit=1)
+            name = parts[1].strip() if len(parts) > 1 else f"session_{int(time.time())}"
+            ok, msg = save_session(name, history)
+            console.print(f"[dim cyan]{msg}[/dim cyan]")
+            continue
+
+        if task.lower().startswith("/load"):
+            parts = task.split(maxsplit=1)
+            if len(parts) > 1 and parts[1].strip():
+                loaded, msg = load_session(parts[1].strip())
+                if loaded:
+                    history = loaded
+                    console.print(f"[bold bright_green]✓ {msg}[/bold bright_green]")
+                else:
+                    console.print(f"[bold red]{msg}[/bold red]")
+            else:
+                console.print(f"[yellow]Available sessions: {', '.join(list_sessions()) or 'None'}[/yellow]")
+            continue
+
+        if task.lower().startswith("/plan"):
+            parts = task.split(maxsplit=1)
+            prompt_plan = parts[1].strip() if len(parts) > 1 else ""
+            instruction = (
+                f"PLANNING MODE: Break this task down into a numbered checklist with clear steps, "
+                f"show the checklist, then execute step 1 immediately with a tool call:\n{prompt_plan}"
+            )
+            processed_prompt, imgs = parse_multimodal_input(instruction)
+            run_task(processed_prompt, history, imgs)
+            continue
+
         if task.lower().startswith("/models") or task.lower().startswith("/model"):
             parts = task.split(maxsplit=1)
             if len(parts) > 1 and parts[1].strip():
                 new_m = parts[1].strip()
-                save_active_model(new_m)
+                set_active_model(new_m)
+                MODEL = new_m
                 console.print(f"[bold bright_green]✓ Active model switched to:[/bold bright_green] [bold white]{new_m}[/bold white]\n")
             else:
                 select_model_interactive()
             continue
+
+        if task.lower() in {"/tools", "tools"}:
+            console.print("\n[bold bright_magenta]Registered GEMBOT Tools (Total: " + str(len(TOOLS)) + "):[/bold bright_magenta]")
+            for k in sorted(TOOLS.keys()):
+                console.print(f"  • [bold cyan]{k}[/bold cyan]")
+            console.print()
+            continue
+
         if task.lower() in {"/help", "help"}:
             console.print("\n[bold bright_magenta]GEMBOT Slash Commands & Shortcuts:[/bold bright_magenta]")
             console.print("  [bold yellow]/models[/bold yellow]          - List and interactively select your Ollama model")
             console.print("  [bold yellow]/models <name>[/bold yellow]   - Directly switch model (e.g. /models qwen2.5-coder:7b)")
             console.print("  [bold yellow]/paste[/bold yellow]           - Directly inspect screenshot/image or file in clipboard")
+            console.print("  [bold yellow]/undo[/bold yellow]            - Restore the last modified file from backups")
+            console.print("  [bold yellow]/auto on|off[/bold yellow]    - Toggle confirmation prompts for dangerous actions")
+            console.print("  [bold yellow]/plan <task>[/bold yellow]    - Force step-by-step checklist planning mode")
+            console.print("  [bold yellow]/save <name>[/bold yellow]    - Save current conversation session")
+            console.print("  [bold yellow]/load <name>[/bold yellow]    - Restore a previous session")
+            console.print("  [bold yellow]/tools[/bold yellow]           - List all available autonomous tools")
             console.print("  [bold yellow]/clear[/bold yellow]           - Clear screen and conversation memory")
             console.print("  [bold yellow]/exit[/bold yellow] or [bold yellow]exit[/bold yellow]    - Exit the gembot CLI")
-            console.print("  [bold yellow]Ctrl+C[/bold yellow]          - Halt any ongoing action immediately\n")
+            console.print("  [bold yellow]Ctrl+C[/bold yellow]          - Immediately abort running action or tool\n")
             continue
 
         processed_prompt, imgs = parse_multimodal_input(task)
