@@ -45,6 +45,9 @@ from rich.text import Text
 from rich.table import Table
 from rich.markdown import Markdown
 from rich.status import Status
+from rich.live import Live
+from rich.align import Align
+from rich.console import Group
 from prompt_toolkit import prompt
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
@@ -64,19 +67,152 @@ from rich.spinner import SPINNERS
 
 console = Console()
 
-# Custom Large Thinking Orb spinner for terminal interface
+# Custom Large Thinking Orb spinner for terminal interface (~3cm animated orb)
+# Each frame is a multi-line ASCII art orb with pulsing glow animation
+_ORB_FRAMES = [
+    # Frame 0 — full bright core
+    [
+        "       [bold bright_cyan]▄▄████▄▄[/bold bright_cyan]       ",
+        "     [bold bright_cyan]▄██[/bold bright_cyan][bold white]██████[/bold white][bold bright_cyan]██▄[/bold bright_cyan]     ",
+        "    [bold bright_cyan]███[/bold bright_cyan][bold white]████████[/bold white][bold bright_cyan]███[/bold bright_cyan]    ",
+        "    [bold bright_cyan]███[/bold bright_cyan][bold white]████████[/bold white][bold bright_cyan]███[/bold bright_cyan]    ",
+        "     [bold bright_cyan]▀██[/bold bright_cyan][bold white]██████[/bold white][bold bright_cyan]██▀[/bold bright_cyan]     ",
+        "       [bold bright_cyan]▀▀████▀▀[/bold bright_cyan]       ",
+    ],
+    # Frame 1 — bright cyan pulse out
+    [
+        "       [bright_cyan]▄▄████▄▄[/bright_cyan]       ",
+        "     [bright_cyan]▄██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▄[/bright_cyan]     ",
+        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
+        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
+        "     [bright_cyan]▀██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▀[/bright_cyan]     ",
+        "       [bright_cyan]▀▀████▀▀[/bright_cyan]       ",
+    ],
+    # Frame 2 — medium cyan glow
+    [
+        "       [cyan]▄▄████▄▄[/cyan]       ",
+        "     [cyan]▄██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▄[/cyan]     ",
+        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
+        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
+        "     [cyan]▀██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▀[/cyan]     ",
+        "       [cyan]▀▀████▀▀[/cyan]       ",
+    ],
+    # Frame 3 — dim pulse (breathing out)
+    [
+        "       [dim cyan]▄▄████▄▄[/dim cyan]       ",
+        "     [dim cyan]▄██[/dim cyan][cyan]██████[/cyan][dim cyan]██▄[/dim cyan]     ",
+        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
+        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
+        "     [dim cyan]▀██[/dim cyan][cyan]██████[/cyan][dim cyan]██▀[/dim cyan]     ",
+        "       [dim cyan]▀▀████▀▀[/dim cyan]       ",
+    ],
+    # Frame 4 — dimmest (breathing valley)
+    [
+        "       [dim blue]▄▄████▄▄[/dim blue]       ",
+        "     [dim blue]▄██[/dim blue][dim cyan]██████[/dim cyan][dim blue]██▄[/dim blue]     ",
+        "    [dim blue]███[/dim blue][dim cyan]████████[/dim cyan][dim blue]███[/dim blue]    ",
+        "    [dim blue]███[/dim blue][dim cyan]████████[/dim cyan][dim blue]███[/dim blue]    ",
+        "     [dim blue]▀██[/dim blue][dim cyan]██████[/dim cyan][dim blue]██▀[/dim blue]     ",
+        "       [dim blue]▀▀████▀▀[/dim blue]       ",
+    ],
+    # Frame 5 — dim pulse (breathing in)
+    [
+        "       [dim cyan]▄▄████▄▄[/dim cyan]       ",
+        "     [dim cyan]▄██[/dim cyan][cyan]██████[/cyan][dim cyan]██▄[/dim cyan]     ",
+        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
+        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
+        "     [dim cyan]▀██[/dim cyan][cyan]██████[/cyan][dim cyan]██▀[/dim cyan]     ",
+        "       [dim cyan]▀▀████▀▀[/dim cyan]       ",
+    ],
+    # Frame 6 — medium cyan rising
+    [
+        "       [cyan]▄▄████▄▄[/cyan]       ",
+        "     [cyan]▄██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▄[/cyan]     ",
+        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
+        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
+        "     [cyan]▀██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▀[/cyan]     ",
+        "       [cyan]▀▀████▀▀[/cyan]       ",
+    ],
+    # Frame 7 — bright rising back to peak
+    [
+        "       [bright_cyan]▄▄████▄▄[/bright_cyan]       ",
+        "     [bright_cyan]▄██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▄[/bright_cyan]     ",
+        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
+        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
+        "     [bright_cyan]▀██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▀[/bright_cyan]     ",
+        "       [bright_cyan]▀▀████▀▀[/bright_cyan]       ",
+    ],
+]
+
+
+class ThinkingOrbLive:
+    """Large animated orb display for the terminal (~3cm diameter).
+    
+    Uses Rich Live to render multi-line ASCII art frames that pulse/breathe
+    with color transitions, creating an orb effect similar to ThinkingOrb.
+    """
+    def __init__(self, label: str, console_obj=None):
+        self._label = label
+        self._console = console_obj or console
+        self._frame_idx = 0
+        self._live = None
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _render_frame(self) -> Group:
+        """Build a Rich renderable for the current orb frame + label."""
+        frame_lines = _ORB_FRAMES[self._frame_idx % len(_ORB_FRAMES)]
+        orb_text = Text.from_markup("\n".join(frame_lines))
+        label_text = Text.from_markup(self._label)
+        return Group(
+            Align.center(orb_text),
+            Align.center(label_text),
+        )
+
+    def _animate(self):
+        """Background thread: advance frames at ~140ms intervals."""
+        while not self._stop_event.is_set():
+            self._frame_idx = (self._frame_idx + 1) % len(_ORB_FRAMES)
+            try:
+                if self._live:
+                    self._live.update(self._render_frame())
+            except Exception:
+                pass
+            self._stop_event.wait(0.14)
+
+    def start(self):
+        """Start the animated orb display."""
+        try:
+            self._live = Live(
+                self._render_frame(),
+                console=self._console,
+                refresh_per_second=10,
+                transient=True,
+            )
+            self._live.start()
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._animate, daemon=True)
+            self._thread.start()
+        except Exception:
+            self._live = None
+
+    def stop(self):
+        """Stop the animated orb display."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        if self._live:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+
+
+# Also register a simple single-line fallback spinner for Rich Status
 SPINNERS["thinking_orb"] = {
-    "interval": 110,
-    "frames": [
-        "🌕 ",
-        "🌖 ",
-        "🌗 ",
-        "🌘 ",
-        "🌑 ",
-        "🌒 ",
-        "🌓 ",
-        "🌔 "
-    ]
+    "interval": 120,
+    "frames": ["● ", "◉ ", "◎ ", "○ ", "◎ ", "◉ "]
 }
 
 # Load runtime config
@@ -1094,14 +1230,12 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             return container["resp"], None
 
         try:
-            status = Status(
-                f"[bold bright_magenta]GEMBOT[/bold bright_magenta] "
+            status = ThinkingOrbLive(
+                f"[bold bright_magenta]● GEMBOT[/bold bright_magenta] "
                 f"[bold bright_cyan]Thinking Engine[/bold bright_cyan] "
                 f"[dim](Model: [bold white]{MODEL}[/bold white] • Step {step+1}/{MAX_STEPS})[/dim] "
                 f"[dim]• [bold red]Ctrl+C[/bold red] to stop[/dim]",
-                spinner="thinking_orb",
-                spinner_style="bold bright_cyan",
-                console=console
+                console_obj=console
             )
             status.start()
         except Exception:
