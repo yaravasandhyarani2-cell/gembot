@@ -65,91 +65,51 @@ from rich.spinner import SPINNERS
 
 console = Console()
 
-# Custom Large Thinking Orb spinner for terminal interface (~3cm animated orb)
-# Each frame is a multi-line ASCII art orb with pulsing glow animation
-_ORB_FRAMES = [
-    # Frame 0 — full bright core
-    [
-        "       [bold bright_cyan]▄▄████▄▄[/bold bright_cyan]       ",
-        "     [bold bright_cyan]▄██[/bold bright_cyan][bold white]██████[/bold white][bold bright_cyan]██▄[/bold bright_cyan]     ",
-        "    [bold bright_cyan]███[/bold bright_cyan][bold white]████████[/bold white][bold bright_cyan]███[/bold bright_cyan]    ",
-        "    [bold bright_cyan]███[/bold bright_cyan][bold white]████████[/bold white][bold bright_cyan]███[/bold bright_cyan]    ",
-        "     [bold bright_cyan]▀██[/bold bright_cyan][bold white]██████[/bold white][bold bright_cyan]██▀[/bold bright_cyan]     ",
-        "       [bold bright_cyan]▀▀████▀▀[/bold bright_cyan]       ",
-    ],
-    # Frame 1 — bright cyan pulse out
-    [
-        "       [bright_cyan]▄▄████▄▄[/bright_cyan]       ",
-        "     [bright_cyan]▄██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▄[/bright_cyan]     ",
-        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
-        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
-        "     [bright_cyan]▀██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▀[/bright_cyan]     ",
-        "       [bright_cyan]▀▀████▀▀[/bright_cyan]       ",
-    ],
-    # Frame 2 — medium cyan glow
-    [
-        "       [cyan]▄▄████▄▄[/cyan]       ",
-        "     [cyan]▄██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▄[/cyan]     ",
-        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
-        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
-        "     [cyan]▀██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▀[/cyan]     ",
-        "       [cyan]▀▀████▀▀[/cyan]       ",
-    ],
-    # Frame 3 — dim pulse (breathing out)
-    [
-        "       [dim cyan]▄▄████▄▄[/dim cyan]       ",
-        "     [dim cyan]▄██[/dim cyan][cyan]██████[/cyan][dim cyan]██▄[/dim cyan]     ",
-        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
-        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
-        "     [dim cyan]▀██[/dim cyan][cyan]██████[/cyan][dim cyan]██▀[/dim cyan]     ",
-        "       [dim cyan]▀▀████▀▀[/dim cyan]       ",
-    ],
-    # Frame 4 — dimmest (breathing valley)
-    [
-        "       [dim blue]▄▄████▄▄[/dim blue]       ",
-        "     [dim blue]▄██[/dim blue][dim cyan]██████[/dim cyan][dim blue]██▄[/dim blue]     ",
-        "    [dim blue]███[/dim blue][dim cyan]████████[/dim cyan][dim blue]███[/dim blue]    ",
-        "    [dim blue]███[/dim blue][dim cyan]████████[/dim cyan][dim blue]███[/dim blue]    ",
-        "     [dim blue]▀██[/dim blue][dim cyan]██████[/dim cyan][dim blue]██▀[/dim blue]     ",
-        "       [dim blue]▀▀████▀▀[/dim blue]       ",
-    ],
-    # Frame 5 — dim pulse (breathing in)
-    [
-        "       [dim cyan]▄▄████▄▄[/dim cyan]       ",
-        "     [dim cyan]▄██[/dim cyan][cyan]██████[/cyan][dim cyan]██▄[/dim cyan]     ",
-        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
-        "    [dim cyan]███[/dim cyan][cyan]████████[/cyan][dim cyan]███[/dim cyan]    ",
-        "     [dim cyan]▀██[/dim cyan][cyan]██████[/cyan][dim cyan]██▀[/dim cyan]     ",
-        "       [dim cyan]▀▀████▀▀[/dim cyan]       ",
-    ],
-    # Frame 6 — medium cyan rising
-    [
-        "       [cyan]▄▄████▄▄[/cyan]       ",
-        "     [cyan]▄██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▄[/cyan]     ",
-        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
-        "    [cyan]███[/cyan][bold bright_cyan]████████[/bold bright_cyan][cyan]███[/cyan]    ",
-        "     [cyan]▀██[/cyan][bold bright_cyan]██████[/bold bright_cyan][cyan]██▀[/cyan]     ",
-        "       [cyan]▀▀████▀▀[/cyan]       ",
-    ],
-    # Frame 7 — bright rising back to peak
-    [
-        "       [bright_cyan]▄▄████▄▄[/bright_cyan]       ",
-        "     [bright_cyan]▄██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▄[/bright_cyan]     ",
-        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
-        "    [bright_cyan]███[/bright_cyan][bold bright_white]████████[/bold bright_white][bright_cyan]███[/bright_cyan]    ",
-        "     [bright_cyan]▀██[/bright_cyan][bold bright_white]██████[/bold bright_white][bright_cyan]██▀[/bright_cyan]     ",
-        "       [bright_cyan]▀▀████▀▀[/bright_cyan]       ",
-    ],
+# ── Thinking Orb: circular shape with gradient shading ──────────────────
+# Shape uses shade chars (░▒▓█) for anti-aliased edges.
+# Widths follow a circle equation (r=8 char-widths, accounting for 2:1 char aspect).
+# Rows are center-padded so Rich renders them aligned.
+_ORB_SHAPE_RAW = [
+    "░▓████▓░",            #  8 wide — top
+    "░▓████████▓░",        # 12 wide
+    "▒████████████▒",      # 14 wide
+    "▓██████████████▓",    # 16 wide — equator
+    "▓██████████████▓",    # 16 wide — equator
+    "▒████████████▒",      # 14 wide
+    "░▓████████▓░",        # 12 wide
+    "░▓████▓░",            #  8 wide — bottom
+]
+_ORB_MAX_W = max(len(r) for r in _ORB_SHAPE_RAW)
+_ORB_SHAPE = [row.center(_ORB_MAX_W) for row in _ORB_SHAPE_RAW]
+
+# Color palettes — one per animation frame.  Maps shade char → Rich style.
+_ORB_PALETTES = [
+    # 0  peak brightness
+    {"░": "bright_blue",  "▒": "bright_cyan",  "▓": "bold bright_cyan", "█": "bold white"},
+    # 1  bright
+    {"░": "bright_blue",  "▒": "bright_cyan",  "▓": "bright_cyan",      "█": "bold bright_white"},
+    # 2  medium-bright
+    {"░": "blue",         "▒": "cyan",          "▓": "bright_cyan",      "█": "bold bright_cyan"},
+    # 3  medium
+    {"░": "blue",         "▒": "dim cyan",      "▓": "cyan",             "█": "bright_cyan"},
+    # 4  dim
+    {"░": "dim blue",     "▒": "dim cyan",      "▓": "dim cyan",         "█": "cyan"},
+    # 5  valley (dimmest)
+    {"░": "dim magenta",  "▒": "dim blue",      "▓": "dim cyan",         "█": "dim bright_cyan"},
+    # 6  rising
+    {"░": "dim blue",     "▒": "dim cyan",      "▓": "cyan",             "█": "bright_cyan"},
+    # 7  rising-bright
+    {"░": "blue",         "▒": "cyan",          "▓": "bright_cyan",      "█": "bold bright_cyan"},
 ]
 
 
 class ThinkingOrbLive:
-    """Large animated orb display for the terminal (~3cm diameter).
-    
-    Uses Rich Live + Panel to render multi-line ASCII art frames that 
-    pulse/breathe with color transitions. Each frame is rendered as a
-    centered Panel with the orb art + status label below.
+    """Large animated orb (~3 cm) for the terminal.
+
+    Renders a properly circular, gradient-shaded orb inside a Rich Panel,
+    animated via Rich Live with a smooth breathing/pulsing colour cycle.
     """
+
     def __init__(self, label: str, console_obj=None):
         self._label = label
         self._console = console_obj or console
@@ -158,24 +118,31 @@ class ThinkingOrbLive:
         self._stop_event = threading.Event()
         self._thread = None
 
+    # ── rendering ────────────────────────────────────────────────────
     def _render_frame(self):
-        """Build a Rich Panel renderable for the current orb frame + label."""
-        frame_lines = _ORB_FRAMES[self._frame_idx % len(_ORB_FRAMES)]
-        # Build single markup string: orb art + blank line + label
-        orb_markup = "\n".join(frame_lines)
-        full_markup = f"{orb_markup}\n\n{self._label}"
-        content = Text.from_markup(full_markup, justify="center")
+        palette = _ORB_PALETTES[self._frame_idx % len(_ORB_PALETTES)]
+        text = Text(justify="center")
+        for i, line in enumerate(_ORB_SHAPE):
+            for ch in line:
+                if ch in palette:
+                    text.append(ch, style=palette[ch])
+                else:
+                    text.append(ch)          # spaces
+            if i < len(_ORB_SHAPE) - 1:
+                text.append("\n")
+        text.append("\n\n")
+        text.append_text(Text.from_markup(self._label))
         return Panel(
-            content,
+            text,
             border_style="bright_cyan",
             padding=(1, 2),
             expand=False,
         )
 
+    # ── animation loop ───────────────────────────────────────────────
     def _animate(self):
-        """Background thread: advance frames at ~150ms intervals."""
         while not self._stop_event.is_set():
-            self._frame_idx = (self._frame_idx + 1) % len(_ORB_FRAMES)
+            self._frame_idx = (self._frame_idx + 1) % len(_ORB_PALETTES)
             try:
                 if self._live:
                     self._live.update(self._render_frame())
@@ -184,7 +151,6 @@ class ThinkingOrbLive:
             self._stop_event.wait(0.15)
 
     def start(self):
-        """Start the animated orb display."""
         try:
             self._live = Live(
                 self._render_frame(),
@@ -200,7 +166,6 @@ class ThinkingOrbLive:
             self._live = None
 
     def stop(self):
-        """Stop the animated orb display."""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=0.5)
