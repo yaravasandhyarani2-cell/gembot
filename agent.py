@@ -45,7 +45,7 @@ from rich.text import Text
 from rich.table import Table
 from rich.markdown import Markdown
 from rich.status import Status
-from rich.live import Live
+
 from prompt_toolkit import prompt
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
@@ -65,122 +65,27 @@ from rich.spinner import SPINNERS
 
 console = Console()
 
-# ── Thinking Orb: circular shape with gradient shading ──────────────────
-# Shape uses shade chars (░▒▓█) for anti-aliased edges.
-# Widths follow a circle equation (r=8 char-widths, accounting for 2:1 char aspect).
-# Rows are center-padded so Rich renders them aligned.
-_ORB_SHAPE_RAW = [
-    "░▓████▓░",            #  8 wide — top
-    "░▓████████▓░",        # 12 wide
-    "▒████████████▒",      # 14 wide
-    "▓██████████████▓",    # 16 wide — equator
-    "▓██████████████▓",    # 16 wide — equator
-    "▒████████████▒",      # 14 wide
-    "░▓████████▓░",        # 12 wide
-    "░▓████▓░",            #  8 wide — bottom
-]
-_ORB_MAX_W = max(len(r) for r in _ORB_SHAPE_RAW)
-_ORB_SHAPE = [row.center(_ORB_MAX_W) for row in _ORB_SHAPE_RAW]
-
-# Color palettes — one per animation frame.  Maps shade char → Rich style.
-_ORB_PALETTES = [
-    # 0  peak brightness
-    {"░": "bright_blue",  "▒": "bright_cyan",  "▓": "bold bright_cyan", "█": "bold white"},
-    # 1  bright
-    {"░": "bright_blue",  "▒": "bright_cyan",  "▓": "bright_cyan",      "█": "bold bright_white"},
-    # 2  medium-bright
-    {"░": "blue",         "▒": "cyan",          "▓": "bright_cyan",      "█": "bold bright_cyan"},
-    # 3  medium
-    {"░": "blue",         "▒": "dim cyan",      "▓": "cyan",             "█": "bright_cyan"},
-    # 4  dim
-    {"░": "dim blue",     "▒": "dim cyan",      "▓": "dim cyan",         "█": "cyan"},
-    # 5  valley (dimmest)
-    {"░": "dim magenta",  "▒": "dim blue",      "▓": "dim cyan",         "█": "dim bright_cyan"},
-    # 6  rising
-    {"░": "dim blue",     "▒": "dim cyan",      "▓": "cyan",             "█": "bright_cyan"},
-    # 7  rising-bright
-    {"░": "blue",         "▒": "cyan",          "▓": "bright_cyan",      "█": "bold bright_cyan"},
-]
-
-
-class ThinkingOrbLive:
-    """Large animated orb (~3 cm) for the terminal.
-
-    Renders a properly circular, gradient-shaded orb inside a Rich Panel,
-    animated via Rich Live with a smooth breathing/pulsing colour cycle.
-    """
-
-    def __init__(self, label: str, console_obj=None):
-        self._label = label
-        self._console = console_obj or console
-        self._frame_idx = 0
-        self._live = None
-        self._stop_event = threading.Event()
-        self._thread = None
-
-    # ── rendering ────────────────────────────────────────────────────
-    def _render_frame(self):
-        palette = _ORB_PALETTES[self._frame_idx % len(_ORB_PALETTES)]
-        text = Text(justify="center")
-        for i, line in enumerate(_ORB_SHAPE):
-            for ch in line:
-                if ch in palette:
-                    text.append(ch, style=palette[ch])
-                else:
-                    text.append(ch)          # spaces
-            if i < len(_ORB_SHAPE) - 1:
-                text.append("\n")
-        text.append("\n\n")
-        text.append_text(Text.from_markup(self._label))
-        return Panel(
-            text,
-            border_style="bright_cyan",
-            padding=(1, 2),
-            expand=False,
-        )
-
-    # ── animation loop ───────────────────────────────────────────────
-    def _animate(self):
-        while not self._stop_event.is_set():
-            self._frame_idx = (self._frame_idx + 1) % len(_ORB_PALETTES)
-            try:
-                if self._live:
-                    self._live.update(self._render_frame())
-            except Exception:
-                pass
-            self._stop_event.wait(0.15)
-
-    def start(self):
-        try:
-            self._live = Live(
-                self._render_frame(),
-                console=self._console,
-                refresh_per_second=8,
-                transient=True,
-            )
-            self._live.start()
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._animate, daemon=True)
-            self._thread.start()
-        except Exception:
-            self._live = None
-
-    def stop(self):
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=0.5)
-        if self._live:
-            try:
-                self._live.stop()
-            except Exception:
-                pass
-            self._live = None
-
-
-# Also register a simple single-line fallback spinner for Rich Status
-SPINNERS["thinking_orb"] = {
-    "interval": 120,
-    "frames": ["● ", "◉ ", "◎ ", "○ ", "◎ ", "◉ "]
+# Custom compact bouncing-bar thinking spinner for terminal interface
+SPINNERS["thinking_bar"] = {
+    "interval": 80,
+    "frames": [
+        "[██░░░░░░░░]",
+        "[░██░░░░░░░]",
+        "[░░██░░░░░░]",
+        "[░░░██░░░░░]",
+        "[░░░░██░░░░]",
+        "[░░░░░██░░░]",
+        "[░░░░░░██░░]",
+        "[░░░░░░░██░]",
+        "[░░░░░░░░██]",
+        "[░░░░░░░██░]",
+        "[░░░░░░██░░]",
+        "[░░░░░██░░░]",
+        "[░░░░██░░░░]",
+        "[░░░██░░░░░]",
+        "[░░██░░░░░░]",
+        "[░██░░░░░░░]",
+    ]
 }
 
 # Load runtime config
@@ -1198,12 +1103,14 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             return container["resp"], None
 
         try:
-            status = ThinkingOrbLive(
-                f"[bold bright_magenta]● GEMBOT[/bold bright_magenta] "
+            status = Status(
+                f"[bold bright_magenta]GEMBOT[/bold bright_magenta] "
                 f"[bold bright_cyan]Thinking Engine[/bold bright_cyan] "
                 f"[dim](Model: [bold white]{MODEL}[/bold white] • Step {step+1}/{MAX_STEPS})[/dim] "
                 f"[dim]• [bold red]Ctrl+C[/bold red] to stop[/dim]",
-                console_obj=console
+                spinner="thinking_bar",
+                spinner_style="bold bright_cyan",
+                console=console
             )
             status.start()
         except Exception:
