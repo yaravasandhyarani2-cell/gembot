@@ -183,3 +183,15 @@ def test_infer_filename_react_with_py_in_history():
     assert "main.py" not in inferred
     assert inferred.endswith(".tsx") or inferred.endswith(".jsx")
 
+
+def test_infer_filename_json_package_with_project_dir():
+    from agent import _infer_filename_from_content
+    history = [
+        {"role": "user", "content": "Please scaffold chatbox-x"},
+        {"role": "assistant", "tool_calls": [{"function": {"name": "make_dir", "arguments": {"path": "chatbox-x"}}}]}
+    ]
+    pkg_code = '{\n  "name": "chatbox-x",\n  "version": "0.1.0",\n  "dependencies": {\n    "next": "14.2.0"\n  }\n}'
+    inferred = _infer_filename_from_content(pkg_code, history)
+    assert inferred == "chatbox-x/package.json"
+
+

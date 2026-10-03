@@ -698,9 +698,64 @@ def ensure_ollama_running() -> bool:
     return False
 
 
-def _infer_filename_from_content(content: str, history: list) -> str | None:
+def _get_active_project_dir(history: list) -> str:
+    """Find the directory created or focused on during the current session."""
+    if not history:
+        return ""
+    for msg in reversed(history):
+        content = ""
+        tool_calls = []
+        if isinstance(msg, dict):
+            content = str(msg.get("content", ""))
+            tool_calls = msg.get("tool_calls") or []
+        else:
+            content = str(getattr(msg, "content", ""))
+            tool_calls = getattr(msg, "tool_calls", None) or []
+
+        for tc in tool_calls:
+            fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
+            name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
+            args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            if name in ("make_dir", "create_dir", "clone_repo"):
+                p = str(args.get("path") or "").strip().strip("./").replace("\\", "/")
+                if p and "/" not in p:
+                    return p
+
+        m = re.search(r'(?:git\s+clone\s+[^\s]+/([a-zA-Z0-9_-]+)(?:\.git)?|cd\s+([a-zA-Z0-9_-]+))', content)
+        if m:
+            folder = m.group(1) or m.group(2)
+            if folder:
+                return folder
+
+    try:
+        subdirs = [d for d in os.listdir(".") if os.path.isdir(d) and not d.startswith(".")]
+        if len(subdirs) == 1:
+            return subdirs[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _infer_filename_from_content(content: any, history: list) -> str | None:
+    if isinstance(content, dict):
+        content = str(content.get("content") or json.dumps(content, indent=2))
+    elif not isinstance(content, str):
+        content = str(content or "")
+
     if not content or not content.strip():
         return None
+
+    prefix = _get_active_project_dir(history)
+    def _with_prefix(filename: str) -> str:
+        if prefix and not filename.startswith(prefix + "/") and not filename.startswith("./" + prefix + "/"):
+            return f"{prefix}/{filename}"
+        return filename
+
     first_lines = content[:2000]
     first_line = content.split("\n", 1)[0].strip()
 
@@ -710,13 +765,13 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
         re.IGNORECASE,
     )
     if header_match:
-        return header_match.group(1).replace("\\", "/")
+        return _with_prefix(header_match.group(1).replace("\\", "/"))
 
     if first_line.startswith("#!"):
         if "python" in first_line:
-            return "script.py"
+            return _with_prefix("script.py")
         if "node" in first_line:
-            return "script.js"
+            return _with_prefix("script.js")
 
     # Search history for explicitly mentioned file paths
     if history:
@@ -744,14 +799,14 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
     stripped = content.strip()
     if stripped.startswith("{") or stripped.startswith("["):
         if '"dependencies"' in content or '"devDependencies"' in content or '"scripts"' in content:
-            return "package.json"
+            return _with_prefix("package.json")
         if '"compilerOptions"' in content:
-            return "tsconfig.json"
-        return "data.json"
+            return _with_prefix("tsconfig.json")
+        return _with_prefix("data.json")
 
     # Git & Environment
     if re.search(r'^(node_modules|\.next|\.env|\.turbo|dist|build|coverage)\b', content, re.MULTILINE):
-        return ".gitignore"
+        return _with_prefix(".gitignore")
 
     # Next.js / React / TypeScript / JSX
     is_ts = bool(re.search(r'(interface\s+\w+|type\s+\w+\s*=|:\s*(string|number|boolean|any|void)\b|<[A-Z]\w*>)', content))
@@ -762,37 +817,37 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
     if comp_match:
         comp_name = comp_match.group(1)
         if is_react and comp_name not in ("App", "Page", "Home"):
-            return f"src/components/{comp_name}.tsx" if is_ts else f"src/components/{comp_name}.jsx"
+            return _with_prefix(f"src/components/{comp_name}.tsx" if is_ts else f"src/components/{comp_name}.jsx")
 
     if "export async function GET" in content or "export async function POST" in content or "NextResponse" in content:
-        return "route.ts" if is_ts else "route.js"
+        return _with_prefix("route.ts" if is_ts else "route.js")
 
     if is_react:
         if "RootLayout" in content or "<html" in content or "metadata" in content:
-            return "layout.tsx" if is_ts else "layout.jsx"
-        return "page.tsx" if is_ts else "App.jsx"
+            return _with_prefix("src/app/layout.tsx" if is_ts else "src/app/layout.jsx")
+        return _with_prefix("src/app/page.tsx" if is_ts else "src/app/page.jsx")
 
     if is_ts and has_export:
-        return "index.ts"
+        return _with_prefix("src/models/chatbox.ts" if ("ollama" in content.lower() or "chat" in content.lower()) else "index.ts")
 
     # Python
     has_python_patterns = bool(re.search(r'^(from\s+[a-zA-Z0-9_.]+\s+import\s+|import\s+[a-zA-Z0-9_, ]+$|def\s+[a-zA-Z0-9_]+\s*\(|class\s+[a-zA-Z0-9_]+\s*[:\(]|if\s+__name__\s*==\s*[\'"]__main__[\'"]:)', first_lines, re.MULTILINE))
     has_js_tokens = bool(re.search(r'(\bconst\b|\blet\b|\bvar\b|\bfunction\b|\bfrom\s+[\'"]|\bexport\b|\bconsole\.log\b|\b=>\b|;\s*$)', first_lines, re.MULTILINE))
 
     if has_python_patterns and not has_js_tokens:
-        return "main.py"
+        return _with_prefix("main.py")
 
     # HTML / CSS / Markdown
     if re.search(r'^<!DOCTYPE html|^<html|^<head|^<body', first_lines, re.IGNORECASE | re.MULTILINE):
-        return "index.html"
+        return _with_prefix("index.html")
     if re.search(r'^(@import |@charset |@tailwind |body\s*\{|html\s*\{|\.[\w-]+\s*\{)', first_lines, re.MULTILINE):
-        return "globals.css"
+        return _with_prefix("src/app/globals.css")
     if re.search(r'^#\s+.+', first_lines, re.MULTILINE):
-        return "README.md"
+        return _with_prefix("README.md")
 
     # General JS fallback
     if has_js_tokens or has_export:
-        return "index.js"
+        return _with_prefix("index.js")
 
     return None
 
@@ -961,6 +1016,7 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         msg["images"] = images
     history.append(msg)
     consecutive_text_retries = 0
+    files_created: set[str] = set()
 
     for step in range(MAX_STEPS):
         if STOP_REQUESTED:
@@ -1079,11 +1135,41 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             else:
                 consecutive_text_retries += 1
                 lower_reply = reply.lower()
-                is_completed = any(p in lower_reply for p in (
-                    "all steps completed", "work is complete", "task is complete", "project is ready",
-                    "successfully created", "setup is complete", "summary of"
+
+                # Check if user requested building/coding an application
+                user_wants_code = any(kw in instruction.lower() for kw in (
+                    "build", "create", "code", "app", "ui", "chat", "next", "react", "component", "scaffold", "implement", "stream"
                 ))
-                if is_completed or consecutive_text_retries >= 3 or step == MAX_STEPS - 1:
+                has_code_file = any(
+                    f.endswith((".tsx", ".ts", ".jsx", ".js", ".py", ".html", ".css"))
+                    for f in files_created
+                )
+
+                if user_wants_code and not has_code_file and step < MAX_STEPS - 3:
+                    if reply:
+                        console.print()
+                        console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Progress[/bold bright_magenta]", border_style="dim magenta"))
+                    console.print(f"  [bold yellow]⚡ PROCEEDING WITH CODE GENERATION:[/bold yellow] [dim]Source code files not yet written. Prompting model for next file (step {step+2}/{MAX_STEPS})...[/dim]")
+                    active_dir = _get_active_project_dir(history) or "chatbox-x"
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            f"DO NOT STOP YET. You have not written the actual application source code files yet. "
+                            f"You must call write_file now to create the main application component (e.g. {active_dir}/src/app/page.tsx or Chatbox.tsx) "
+                            f"and the model streaming client (e.g. {active_dir}/src/models/chatbox.ts). "
+                            f"Output a valid write_file tool call now."
+                        )
+                    })
+                    continue
+
+                is_completed = (
+                    (not user_wants_code or has_code_file) and (
+                        any(p in lower_reply for p in ("all steps completed", "work is complete", "task is complete", "project is ready", "summary of completed"))
+                        or consecutive_text_retries >= 3
+                    )
+                )
+
+                if is_completed or step == MAX_STEPS - 1:
                     if reply:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
@@ -1137,6 +1223,7 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                         path = os.path.join(os.getcwd(), f"output_{int(time.time())}.txt")
                         args["path"] = path
 
+                files_created.add(path)
                 console.print(f"\n  [bold bright_green]🔨 BUILDING / CREATING FILE:[/bold bright_green] [bold white]{path}[/bold white]")
                 code_lines = content.splitlines()
                 preview = "\n".join(code_lines[:20])
