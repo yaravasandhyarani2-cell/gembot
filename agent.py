@@ -192,11 +192,12 @@ def build_system_prompt() -> str:
         "- Only use tool names and argument shapes present in the supplied schema. Never invent a tool.\n"
         "- Make one next action at a time. If native tool calling is unavailable, output one JSON tool-call object only; do not embed several calls inside a plan.\n"
         "- A plain-text answer is allowed after the work is complete or when you need the user to decide something.\n"
-        "- Use run_command for terminal work and git_publish after checking or testing the completed project.\n"
-        "- Complete tasks fully — write ALL required files with complete code (never truncate, abbreviate, or use placeholders), run commands, and test thoroughly.\n"
-        "- ALWAYS provide the full explicit 'path' argument when calling write_file or edit_file (e.g., 'Chatbox-X/package.json', 'src/app/page.tsx').\n"
-        "- When asked to scaffold or build an application (e.g. Next.js, React, Node.js, Python), create every necessary file completely: package.json, configuration files, backend APIs, frontend UI components, styles, and documentation.\n"
+        "- ONLY do exactly what the user asks. Do NOT create extra folders, scaffolding, or git operations unless the user explicitly requests them.\n"
+        "- Write files in the simplest path that makes sense (e.g., 'clock.py' not 'src/app/clock.py') unless the user specifies a directory structure.\n"
+        "- Complete tasks fully — write ALL required files with complete code (never truncate, abbreviate, or use placeholders).\n"
+        "- ALWAYS provide the full explicit 'path' argument when calling write_file or edit_file.\n"
         "- Use edit_file for updating parts of existing files instead of rewriting them completely.\n"
+        "- Do NOT auto-push to GitHub or run git commands unless the user explicitly asks.\n"
         "- After completing all task steps, give a brief clear summary."
     )
     ctx = load_gembot_project_context()
@@ -854,7 +855,7 @@ def _infer_filename_from_content(content: any, history: list) -> str | None:
         return _with_prefix("src/app/page.tsx" if is_ts else "src/app/page.jsx")
 
     if is_ts and has_export:
-        return _with_prefix("src/models/chatbox.ts" if ("ollama" in content.lower() or "chat" in content.lower()) else "index.ts")
+        return _with_prefix("index.ts")
 
     # Python
     has_python_patterns = bool(re.search(r'^(from\s+[a-zA-Z0-9_.]+\s+import\s+|import\s+[a-zA-Z0-9_, ]+$|def\s+[a-zA-Z0-9_]+\s*\(|class\s+[a-zA-Z0-9_]+\s*[:\(]|if\s+__name__\s*==\s*[\'"]__main__[\'"]:)', first_lines, re.MULTILINE))
@@ -1197,13 +1198,12 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Progress[/bold bright_magenta]", border_style="dim magenta"))
                     console.print(f"  [bold yellow]⚡ PROCEEDING WITH CODE GENERATION:[/bold yellow] [dim]Source code files not yet written. Prompting model for next file (step {step+2}/{MAX_STEPS})...[/dim]")
-                    active_dir = _get_active_project_dir(history) or "chatbox-x"
+                    active_dir = _get_active_project_dir(history) or "."
                     history.append({
                         "role": "user",
                         "content": (
                             f"DO NOT STOP YET. You have not written the actual application source code files yet. "
-                            f"You must call write_file now to create the main application component (e.g. {active_dir}/src/app/page.tsx or Chatbox.tsx) "
-                            f"and the model streaming client (e.g. {active_dir}/src/models/chatbox.ts). "
+                            f"You must call write_file now to create the required source code file(s) for the task. "
                             f"Output a valid write_file tool call now."
                         )
                     })
