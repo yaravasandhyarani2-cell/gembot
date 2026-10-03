@@ -16,7 +16,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_steps": 16,
     "max_output": 2500,
     "max_history": 24,
-    "command_timeout": 60,
+    "command_timeout": 120,
     "auto_confirm": False,
     "blocked_commands": [
         "format",

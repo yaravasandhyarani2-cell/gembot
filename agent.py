@@ -404,7 +404,7 @@ def write_file(path: str, content: str) -> str:
 
 
 def run_command(command: str) -> str:
-    """Run a shell command autonomously with safety checks and timeout."""
+    """Run a shell command autonomously with safety checks, real-time streaming, and smart timeout."""
     global STOP_REQUESTED
     blocked = CONFIG.get("blocked_commands", [])
     is_d, desc = is_dangerous_command(command, blocked)
@@ -412,17 +412,48 @@ def run_command(command: str) -> str:
         if not ask_user_confirmation(f"Command flagged as dangerous ({desc}): '{command}'"):
             return f"Action cancelled by safety gate: {desc}"
 
-    console.print(f"  [bright_black]⚡ [gembot cmd]:[/bright_black] [bold yellow]{command}[/bold yellow]")
+    # --- Smart command preprocessing ---
+    # Auto-add non-interactive flags for known interactive installers
+    cmd_lower = command.strip().lower()
+    actual_command = command
+
+    # npx: ensure -y/--yes flag is present so it doesn't prompt "Ok to proceed?"
+    if cmd_lower.startswith("npx ") and " -y " not in cmd_lower and " --yes " not in cmd_lower and not cmd_lower.startswith("npx -y") and not cmd_lower.startswith("npx --yes"):
+        actual_command = "npx -y " + command[4:]
+        console.print(f"  [dim cyan]↳ Auto-added -y flag for non-interactive execution[/dim cyan]")
+
+    # create-next-app: ensure --use-npm and non-interactive flags
+    if "create-next-app" in cmd_lower and "--use-npm" not in cmd_lower:
+        actual_command += " --use-npm"
+
+    # Detect long-running install/build commands and use extended timeout
+    _LONG_RUNNING_PATTERNS = ["npm ", "npx ", "pip ", "pip3 ", "yarn ", "pnpm ", "cargo ", "dotnet ", "composer ",
+                               "maven ", "mvn ", "gradle ", "go build", "go install", "docker ", "choco "]
+    is_long_running = any(cmd_lower.startswith(p) or f" {p}" in cmd_lower for p in _LONG_RUNNING_PATTERNS)
+    effective_timeout = COMMAND_TIMEOUT * 5 if is_long_running else COMMAND_TIMEOUT  # 300s for installs
+
+    console.print(f"  [bright_black]⚡ [gembot cmd]:[/bright_black] [bold yellow]{actual_command}[/bold yellow]")
+    if is_long_running:
+        console.print(f"  [dim]↳ Extended timeout: {effective_timeout}s (install/build detected)[/dim]")
+
     try:
-        # Use Popen + polling so Ctrl+C can interrupt long-running commands on Windows.
+        # Use Popen + real-time line streaming so the user sees progress immediately.
+        # stdin=DEVNULL prevents commands from hanging on interactive prompts.
         # CREATE_NEW_PROCESS_GROUP prevents the child from consuming the Ctrl+C signal.
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         proc = subprocess.Popen(
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, creationflags=creationflags
+            actual_command, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True, creationflags=creationflags,
+            bufsize=1,  # Line-buffered for real-time output
         )
-        deadline = time.time() + COMMAND_TIMEOUT
-        while proc.poll() is None:
+
+        output_lines = []
+        deadline = time.time() + effective_timeout
+
+        # Stream output line by line in real-time
+        for line in iter(proc.stdout.readline, ""):
             if STOP_REQUESTED:
                 proc.terminate()
                 try:
@@ -438,10 +469,19 @@ def run_command(command: str) -> str:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=2)
-                return f"Error: Command timed out after {COMMAND_TIMEOUT} seconds"
-            # Use Event.wait for faster Ctrl+C response instead of time.sleep
-            _STOP_EVENT.wait(timeout=0.1)
-        out = (proc.stdout.read() + proc.stderr.read()).strip()
+                partial = "\n".join(output_lines[-20:]) if output_lines else ""
+                return f"Error: Command timed out after {effective_timeout}s\nLast output:\n{partial}"
+
+            stripped = line.rstrip()
+            if stripped:
+                output_lines.append(stripped)
+                # Show real-time streaming output (last line only, compact)
+                console.print(f"     [dim]{stripped[:200]}[/dim]")
+
+        proc.wait(timeout=5)
+        out = "\n".join(output_lines).strip()
+        if proc.returncode != 0 and not out:
+            out = f"Command failed with exit code {proc.returncode}"
         return _cut(out or f"Executed successfully (exit code {proc.returncode})")
     except Exception as e:
         return f"Error: {e}"
