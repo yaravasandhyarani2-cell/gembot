@@ -13,8 +13,8 @@ GLOBAL_ENV = GLOBAL_AGENT_DIR / ".env"
 DEFAULT_CONFIG: Dict[str, Any] = {
     "model": "qwen2.5-coder:7b",
     "fallback_model": "qwen2.5-coder:3b",
-    "max_steps": 16,
-    "max_output": 2500,
+    "max_steps": 50,
+    "max_output": 25000,
     "max_history": 24,
     "num_predict": 4096,
     "num_ctx": 8192,

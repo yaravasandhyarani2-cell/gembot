@@ -65,8 +65,8 @@ console = Console()
 # Load runtime config
 CONFIG = load_config()
 MODEL = CONFIG.get("model", "qwen2.5-coder:7b")
-MAX_STEPS = int(CONFIG.get("max_steps", 16))
-MAX_OUTPUT = int(CONFIG.get("max_output", 2500))
+MAX_STEPS = int(CONFIG.get("max_steps", 50))
+MAX_OUTPUT = int(CONFIG.get("max_output", 25000))
 MAX_HISTORY = int(CONFIG.get("max_history", 24))
 COMMAND_TIMEOUT = int(CONFIG.get("command_timeout", 60))
 AUTO_CONFIRM = bool(CONFIG.get("auto_confirm", False))
@@ -1091,7 +1091,10 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 short_result = str(result)[:300] + ("..." if len(str(result)) > 300 else "")
                 console.print(f"     [dim]↳ Result:[/dim] [bright_black]{short_result}[/bright_black]")
 
-            history.append({"role": "tool", "tool_name": name, "content": str(result)})
+            res_str = str(result)
+            if len(res_str) > MAX_OUTPUT:
+                res_str = res_str[:MAX_OUTPUT] + f"\n... [Output truncated to {MAX_OUTPUT} characters]"
+            history.append({"role": "tool", "tool_name": name, "content": res_str})
 
     console.print("\n[dim][gembot] Completed maximum autonomous steps for this task.[/dim]\n")
 
