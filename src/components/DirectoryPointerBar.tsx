@@ -11,7 +11,8 @@ import {
   Compass, 
   RefreshCw,
   FolderPlus,
-  ExternalLink
+  ExternalLink,
+  Download
 } from 'lucide-react';
 
 interface DirectoryPointerBarProps {
@@ -168,6 +169,16 @@ export const DirectoryPointerBar: React.FC<DirectoryPointerBarProps> = ({
           <FolderInput className="w-3.5 h-3.5 text-indigo-400" />
           <span>Point to Path</span>
         </button>
+
+        <a
+          href="/api/workspace/download-zip"
+          download="chatbox-x-project.zip"
+          className="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-800/40 text-emerald-300 font-semibold text-xs transition-colors flex items-center gap-1"
+          title="Download workspace files as ZIP"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span>Download ZIP</span>
+        </a>
 
         {dirInfo?.parentDirectory && (
           <button

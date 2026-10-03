@@ -13,6 +13,7 @@
     "@google/genai": "latest",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "jszip": "^3.10.2",
     "lucide-react": "^1.16.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -21,6 +22,7 @@
     "@tailwindcss/vite": "^4.0.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/jszip": "^3.4.1",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

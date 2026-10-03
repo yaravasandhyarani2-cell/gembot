@@ -262,6 +262,16 @@ export const WorkspaceExplorer: React.FC<WorkspaceExplorerProps> = ({
             <span>Point Local Folder</span>
           </button>
 
+          <a
+            href="/api/workspace/download-zip"
+            download="chatbox-x-project.zip"
+            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-950/40"
+            title="Download entire project and files as a ZIP archive to extract onto your PC"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Download Project ZIP</span>
+          </a>
+
           {onPointOutDirectory && (
             <button
               onClick={() => onPointOutDirectory(rootPath)}

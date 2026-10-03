@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
+import JSZip from 'jszip';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -368,6 +369,40 @@ const getWorkspaceTree = (dir: string, base = ''): any[] => {
 app.get('/api/workspace', (req, res) => {
   const tree = getWorkspaceTree(WORKSPACE_DIR);
   res.json({ files: tree, root: WORKSPACE_DIR });
+});
+
+// Download full workspace as ZIP
+app.get('/api/workspace/download-zip', async (req, res) => {
+  try {
+    const zip = new JSZip();
+
+    const addDirToZip = (dirPath: string, zipFolder: JSZip) => {
+      if (!fs.existsSync(dirPath)) return;
+      const items = fs.readdirSync(dirPath, { withFileTypes: true });
+      for (const item of items) {
+        if (item.name === '.git' || item.name === 'node_modules' || item.name === '.next') continue;
+        const fullPath = path.join(dirPath, item.name);
+        if (item.isDirectory()) {
+          const sub = zipFolder.folder(item.name);
+          if (sub) addDirToZip(fullPath, sub);
+        } else {
+          try {
+            const fileData = fs.readFileSync(fullPath);
+            zipFolder.file(item.name, fileData);
+          } catch (e) {}
+        }
+      }
+    };
+
+    addDirToZip(WORKSPACE_DIR, zip);
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="chatbox-x-project.zip"');
+    res.send(buffer);
+  } catch (err: any) {
+    res.status(500).json({ error: `ZIP generation failed: ${err.message}` });
+  }
 });
 
 // Directory Pointer & Local Folder Management
@@ -920,7 +955,7 @@ git push -u origin main
     const r8 = await executeTool('git_commit_and_push', { commit_message: 'Initial setup of Chatbox-X with Ollama streaming', branch: 'main' });
     sendEvent({ type: 'tool_end', toolId: 't-8', result: r8 });
 
-    sendEvent({ type: 'token', text: "\n\n✅ **All 8 Steps Completed Successfully without early termination!**\n\n- Cloned empty repository structure into `./chatbox-x`\n- Generated `package.json` with Next.js, React, and Tailwind dependencies\n- Implemented real-time text streaming client in `src/models/chatbox.ts` connecting to local Ollama (`gemma4:e2b`)\n- Created modern, fully responsive UI in `src/app/page.tsx` with auto-scrolling, indicators, and clear chat\n- Created `.gitignore` and comprehensive `README.md`\n- Committed and prepared git branch for pushing to `https://github.com/yaravasandhyarani2-cell/chatbox-x.git`." });
+    sendEvent({ type: 'token', text: "\n\n✅ **All 8 Steps Completed Successfully!**\n\n### 📦 6 Files Generated in Workspace:\n- `chatbox-x/package.json` — Next.js 14, React 18, and Tailwind dependencies\n- `chatbox-x/src/models/chatbox.ts` — Ollama streaming client for `gemma4:e2b`\n- `chatbox-x/src/app/page.tsx` — Full interactive Chatbox UI with auto-scrolling & streaming\n- `chatbox-x/src/app/layout.tsx` — Next.js root layout metadata\n- `chatbox-x/src/app/globals.css` — Tailwind styling\n- `chatbox-x/.gitignore` & `chatbox-x/README.md` — Git push setup\n\n📥 **How to get this code onto your computer:**\n1. **Download ZIP**: Click the green **[Download ZIP]** button in the top bar to save `chatbox-x-project.zip` directly to your computer and extract it into `C:\\Users\\Subhash\\Desktop\\test`.\n2. **Workspace Tab**: Click **[Workspace]** at the top of this window to view, inspect, or copy each file.\n3. **Local CLI**: If you run in your Windows Command Prompt (`C:\\Users\\Subhash\\Desktop\\test> gembot`), copy the updated `agent.py` to `%USERPROFILE%\\agent\\agent.py` so files are written directly to your local C: drive without early termination." });
   } else {
     // General task execution
     sendEvent({ type: 'step', step: 1, maxSteps: 3 });
