@@ -15,9 +15,12 @@ import {
   Shield,
   Layers,
   FilePlus,
-  Play
+  Play,
+  Compass,
+  Folder
 } from 'lucide-react';
 import { ChatMessage, ToolCallItem, AgentConfig } from '../types';
+import { DirectoryPointerBar } from './DirectoryPointerBar';
 
 interface AgentTerminalProps {
   messages: ChatMessage[];
@@ -28,9 +31,13 @@ interface AgentTerminalProps {
   pendingConfirmation: { id: string; actionDesc: string } | null;
   config: AgentConfig;
   onOpenWorkspaceFile?: (path: string) => void;
+  onDirectoryChange?: (newPath: string) => void;
 }
 
 const SLASH_COMMANDS = [
+  { cmd: '/dir', desc: 'Inspect and point out the active local folder and file directory' },
+  { cmd: '/cd <path>', desc: 'Point Gembot to work on a specific local folder' },
+  { cmd: '/pwd', desc: 'Display the absolute path of the active local directory' },
   { cmd: '/help', desc: 'Display command guide and shortcuts' },
   { cmd: '/tools', desc: 'List all 30 available autonomous tools' },
   { cmd: '/models', desc: 'Switch or select AI models' },
@@ -52,7 +59,8 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
   onConfirmAction,
   pendingConfirmation,
   config,
-  onOpenWorkspaceFile
+  onOpenWorkspaceFile,
+  onDirectoryChange
 }) => {
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -118,6 +126,12 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-[#0b0c14] relative overflow-hidden font-mono text-xs sm:text-sm">
+      {/* Active Local Folder & Directory Pointer Bar */}
+      <DirectoryPointerBar 
+        onDirectoryChange={onDirectoryChange}
+        onPointOutDirectory={(dir) => onSendMessage(`/dir ${dir}`)}
+      />
+
       {/* Messages Scroll Area */}
       <div 
         ref={scrollRef}
@@ -188,6 +202,17 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
                 <span>System Diagnostics</span>
               </div>
               <p className="text-[11px] text-gray-400">Inspect live hardware usage, OS specs, and sandbox environment state.</p>
+            </button>
+
+            <button
+              onClick={() => onSendMessage("/dir")}
+              className="p-3 rounded-lg bg-[#121522] border border-purple-900/40 hover:border-purple-500/60 hover:bg-purple-950/20 text-left transition-all group sm:col-span-2 lg:col-span-3"
+            >
+              <div className="flex items-center gap-2 text-pink-400 font-semibold mb-1 text-xs">
+                <Compass className="w-3.5 h-3.5 text-pink-400 group-hover:scale-110 transition-transform" />
+                <span>Point Out File Directory</span>
+              </div>
+              <p className="text-[11px] text-gray-400">Inspect active local folder, list all subdirectories, and point Gembot to any directory.</p>
             </button>
           </div>
         )}

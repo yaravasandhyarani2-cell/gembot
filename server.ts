@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Directories
-const WORKSPACE_DIR = path.resolve(__dirname, 'workspace');
+let WORKSPACE_DIR = path.resolve(__dirname, 'workspace');
 const GEMBOT_DIR = path.resolve(__dirname, '.gembot');
 const BACKUPS_DIR = path.join(GEMBOT_DIR, 'backups');
 const SESSIONS_DIR = path.join(GEMBOT_DIR, 'sessions');
@@ -368,6 +368,65 @@ const getWorkspaceTree = (dir: string, base = ''): any[] => {
 app.get('/api/workspace', (req, res) => {
   const tree = getWorkspaceTree(WORKSPACE_DIR);
   res.json({ files: tree, root: WORKSPACE_DIR });
+});
+
+// Directory Pointer & Local Folder Management
+app.get('/api/directory', (req, res) => {
+  const current = WORKSPACE_DIR;
+  const parent = path.dirname(current);
+  let subdirs: string[] = [];
+  try {
+    if (fs.existsSync(current)) {
+      subdirs = fs.readdirSync(current, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+        .map(d => d.name);
+    }
+  } catch (e) {}
+
+  res.json({
+    currentDirectory: current,
+    currentFolderName: path.basename(current),
+    parentDirectory: parent,
+    subdirectories: subdirs,
+    exists: fs.existsSync(current)
+  });
+});
+
+app.post('/api/directory', (req, res) => {
+  const { path: newPath, create = true } = req.body;
+  if (!newPath || typeof newPath !== 'string') {
+    return res.status(400).json({ error: 'Missing path' });
+  }
+
+  let resolved = path.isAbsolute(newPath) ? newPath : path.resolve(WORKSPACE_DIR, newPath);
+
+  if (!fs.existsSync(resolved)) {
+    if (create) {
+      try {
+        fs.mkdirSync(resolved, { recursive: true });
+      } catch (err: any) {
+        return res.status(500).json({ error: `Cannot create directory: ${err.message}` });
+      }
+    } else {
+      return res.status(404).json({ error: `Directory '${resolved}' does not exist` });
+    }
+  }
+
+  WORKSPACE_DIR = resolved;
+  let subdirs: string[] = [];
+  try {
+    subdirs = fs.readdirSync(WORKSPACE_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+      .map(d => d.name);
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    currentDirectory: WORKSPACE_DIR,
+    currentFolderName: path.basename(WORKSPACE_DIR),
+    parentDirectory: path.dirname(WORKSPACE_DIR),
+    subdirectories: subdirs
+  });
 });
 
 app.get('/api/workspace/file', (req, res) => {

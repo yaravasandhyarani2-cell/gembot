@@ -1532,6 +1532,39 @@ def main() -> None:
             console.print(f"[{color}]{msg}[/{color}]")
             continue
 
+        if task.lower().startswith(("/dir", "/pwd", "dir", "pwd", "/where", "/cd ", "cd ")):
+            parts = task.split(maxsplit=1)
+            cmd = parts[0].lower()
+            target_path = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
+
+            if target_path and cmd in ("/cd", "cd", "/dir", "dir"):
+                try:
+                    os.makedirs(target_path, exist_ok=True)
+                    os.chdir(target_path)
+                    console.print(f"[bold bright_green]✓ Active working folder switched to:[/bold bright_green] [bold white]{os.getcwd()}[/bold white]")
+                except Exception as e:
+                    console.print(f"[bold red]Error changing directory:[/bold red] {e}")
+                continue
+
+            # Point out directory structure
+            curr = os.getcwd()
+            try:
+                items = os.listdir(curr)
+                dirs = [d for d in items if os.path.isdir(os.path.join(curr, d)) and not d.startswith(".")]
+                files = [f for f in items if os.path.isfile(os.path.join(curr, f))]
+            except Exception as e:
+                console.print(f"[bold red]Error reading directory:[/bold red] {e}")
+                continue
+
+            tree_text = f"[bold cyan]📁 Local Working Directory:[/bold cyan] [bold white]{curr}[/bold white]\n\n"
+            tree_text += f"[bold yellow]Subdirectories ({len(dirs)}):[/bold yellow] " + (", ".join(dirs) if dirs else "[dim]none[/dim]") + "\n"
+            tree_text += f"[bold green]Files ({len(files)}):[/bold green] " + (", ".join(files[:25]) if files else "[dim]none[/dim]")
+            if len(files) > 25:
+                tree_text += f" [dim](+{len(files)-25} more files)[/dim]"
+            tree_text += "\n\n[dim]Tip: Type '/cd <folder>' to change active directory.[/dim]"
+            console.print(Panel(tree_text, title="[bold bright_magenta]📂 File Directory Pointer[/bold bright_magenta]", border_style="bright_magenta"))
+            continue
+
         if task.lower().startswith("/auto"):
             parts = task.split(maxsplit=1)
             if len(parts) > 1 and parts[1].strip().lower() in ("on", "1", "true"):

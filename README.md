@@ -164,24 +164,98 @@ Switch models anytime in the terminal with `/models`:
 
 ## 💻 How to Run & Slash Commands
 
-Launch from any Windows terminal:
+You can run **gembot** in two modes: as a **Windows Desktop CLI** or as a **Full-Stack Web Agent Application**.
+
+### Option A: Running the Windows Desktop CLI
+
+#### 1. Update Deployed Agent Files (First Time or After Code Updates)
+Run in PowerShell to deploy the latest fixes to your global agent environment:
+```powershell
+Copy-Item -Path "c:\Users\Subhash\Desktop\gembot\agent.py" -Destination "$env:USERPROFILE\agent\agent.py" -Force
+Copy-Item -Path "c:\Users\Subhash\Desktop\gembot\gembot_core" -Destination "$env:USERPROFILE\agent\gembot_core" -Recurse -Force
+```
+
+#### 2. Ensure Ollama is Running
+Pull and run your preferred model:
+```cmd
+ollama run gemma4:e2b
+:: or for coding specialist:
+ollama run qwen2.5-coder:7b
+```
+
+#### 3. Launch GEMBOT
+Open any Command Prompt or PowerShell in your desired project workspace (e.g. `C:\Users\Subhash\Desktop\test`) and run:
 ```cmd
 gembot
 ```
+*Alternatively, run directly from source repository:*
+```cmd
+cd c:\Users\Subhash\Desktop\gembot
+python agent.py
+```
+
+---
+
+### Option B: Running the Full-Stack Web Agent Application
+
+Gembot includes a modern web-based console with an interactive terminal, live code generator panels, workspace file explorer, snapshot undo manager, and real-time system diagnostics.
+
+#### 1. Install Dependencies
+```bash
+npm install
+```
+
+#### 2. Run in Development Mode (Port 3000)
+```bash
+npm run dev
+```
+
+#### 3. Build & Run Production Mode
+```bash
+npm run build
+npm start
+```
+Open your browser at **`http://localhost:3000`** to access the web application.
+
+---
 
 ### Slash Commands:
+- `/dir` — Inspect and point out the active local folder, subdirectories, and files.
+- `/cd <path>` — Switch Gembot to work on a specific local folder or project path.
+- `/pwd` — Display the absolute path of the current working directory.
 - `/paste` — Directly inspect screenshot/image or copied file from clipboard.
 - `/undo` — Restore the last modified file from `.gembot/backups/`.
 - `/auto on|off` — Toggle confirmation prompts for dangerous actions.
 - `/plan <task>` — Force step-by-step checklist planning mode.
 - `/save <name>` — Save current conversation session to `.gembot/sessions/`.
 - `/load <name>` — Restore a previous conversation session.
-- `/tools` — List all 30 available autonomous tools.
-- `/models` — Interactively select or switch Ollama models.
-- `/models <name>` — Directly switch model (e.g. `/models qwen2.5-coder:7b`).
+- `/tools` — List all 30 available autonomous tools with full argument schemas.
+- `/models` — Interactively select or switch Ollama / Gemini models.
+- `/models <name>` — Directly switch model (e.g. `/models qwen2.5-coder:7b` or `/models gemma4:e2b`).
 - `/clear` — Clear screen and conversation memory.
 - `/help` — Display command guide and shortcuts.
 - `Ctrl+C` — Instantly abort any running tool or model generation.
+
+---
+
+## 📂 Local Folder & File Directory Pointer
+
+GEMBOT includes a dedicated **File Directory Pointer** system that lets you inspect and switch the active local workspace:
+
+1. **In the Web Application:**
+   - **Active Directory Bar:** The top bar displays your current working folder (e.g. `C:\Users\Subhash\Desktop\test\chatbox-x` or `/app/applet/workspace`).
+   - **Breadcrumb Navigation:** Click any directory segment in the breadcrumb trail to navigate up or down the directory tree.
+   - **Point to Path Button:** Click **"Point to Path"** to type or paste any directory on your computer to set it as Gembot's active folder.
+   - **Subfolder Dropdown:** Jump directly into any project subfolder (like `chatbox-x/` or `src/`) with a single click.
+   - **Inspect in Console:** Click **"Point Out Directory"** to render a full tree of all files and folders in your console.
+
+2. **In the Windows Terminal CLI:**
+   - Run `/dir` or `/pwd` at any time to point out your current working directory, list all subdirectories, and display all files.
+   - Run `/cd <folder_path>` or `/dir <folder_path>` to switch Gembot's working folder on the fly without restarting the CLI:
+     ```cmd
+     gembot> /cd C:\Users\Subhash\Desktop\test\chatbox-x
+     ✓ Active working folder switched to: C:\Users\Subhash\Desktop\test\chatbox-x
+     ```
 
 ---
 

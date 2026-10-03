@@ -186,6 +186,90 @@ export default function App() {
       return;
     }
 
+    if (trimmed === '/dir' || trimmed === '/pwd' || trimmed.startsWith('/dir ') || trimmed.startsWith('/cd ')) {
+      const parts = trimmed.split(/\s+/, 2);
+      const cmd = parts[0];
+      const targetPath = parts[1];
+
+      if (targetPath) {
+        // Change working directory
+        try {
+          const res = await fetch('/api/directory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: targetPath, create: true })
+          });
+          const data = await res.json();
+          if (res.ok) {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: `usr-${Date.now()}`,
+                role: 'user',
+                content: text,
+                timestamp: Date.now()
+              },
+              {
+                id: `sys-${Date.now()}`,
+                role: 'assistant',
+                content: `📂 **[LOCAL DIRECTORY POINTER]**: Working folder switched to:\n\`${data.currentDirectory}\`\n\nSubfolders: ${data.subdirectories?.length ? data.subdirectories.join(', ') : '*(none)*'}`,
+                timestamp: Date.now()
+              }
+            ]);
+            return;
+          }
+        } catch (e) {}
+      } else {
+        // Inspect active directory
+        try {
+          const [dirRes, workRes] = await Promise.all([
+            fetch('/api/directory'),
+            fetch('/api/workspace')
+          ]);
+          const dirData = await dirRes.json();
+          const workData = await workRes.json();
+
+          const fileList: string[] = [];
+          const traverse = (items: any[], p = '') => {
+            for (const item of items) {
+              if (item.isDir) {
+                if (item.children) traverse(item.children, p ? `${p}/${item.name}` : item.name);
+              } else {
+                fileList.push(p ? `${p}/${item.name}` : item.name);
+              }
+            }
+          };
+          if (workData.files) traverse(workData.files);
+
+          const summary = `### 📂 Active File Directory Pointer\n\n` +
+            `* **Local Folder Path:** \`${dirData.currentDirectory}\`\n` +
+            `* **Folder Name:** \`${dirData.currentFolderName}\`\n` +
+            `* **Parent Directory:** \`${dirData.parentDirectory}\`\n` +
+            `* **Subdirectories:** ${dirData.subdirectories?.length ? dirData.subdirectories.map((s: string) => `\`${s}\``).join(', ') : '*(none)*'}\n\n` +
+            `**Files Located in Directory (${fileList.length}):**\n` +
+            (fileList.length ? fileList.map(f => `- \`${f}\``).join('\n') : '*(Directory is currently empty)*') +
+            `\n\n*Tip: Type \`/cd <folder>\` or click "Point to Path" in the top bar to switch active directory.*`;
+
+          setMessages(prev => [
+            ...prev,
+            {
+              id: `usr-${Date.now()}`,
+              role: 'user',
+              content: text,
+              timestamp: Date.now()
+            },
+            {
+              id: `sys-${Date.now()}`,
+              role: 'assistant',
+              content: summary,
+              timestamp: Date.now()
+            }
+          ]);
+          return;
+        } catch (e) {}
+      }
+    }
+
     const userMsg: ChatMessage = {
       id: `usr-${Date.now()}`,
       role: 'user',
@@ -371,6 +455,7 @@ export default function App() {
             pendingConfirmation={pendingConfirmation}
             config={config}
             onOpenWorkspaceFile={handleOpenWorkspaceFile}
+            onDirectoryChange={() => checkCanUndo()}
           />
         )}
 
@@ -378,6 +463,10 @@ export default function App() {
           <WorkspaceExplorer
             onRefreshWorkspace={checkCanUndo}
             selectedFilePath={selectedFilePath}
+            onPointOutDirectory={(dir) => {
+              setActiveTab('terminal');
+              handleSendMessage('/dir');
+            }}
           />
         )}
 
