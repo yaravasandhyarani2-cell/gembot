@@ -1,0 +1,8 @@
+{
+  "name": "gembot",
+  "description": "Autonomous Desktop, Web Browser & Coding AI Agent with 30 tools, precision patch-editing, undo backups, and self-healing execution.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

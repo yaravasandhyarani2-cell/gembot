@@ -134,3 +134,52 @@ def test_config_num_predict_and_ctx():
     cfg = load_config()
     assert cfg["num_predict"] >= 4096
     assert cfg["num_ctx"] >= 8192
+
+
+def test_normalize_tool_args_dict_content():
+    from agent import _normalize_tool_args
+    args = {
+        "path": "./chatbox-x/.gitignore",
+        "content": {
+            "type": "string",
+            "content": "node_modules\nbuild"
+        }
+    }
+    normalized, err = _normalize_tool_args("write_file", args)
+    assert err is None
+    assert normalized["content"] == "node_modules\nbuild"
+
+
+def test_parse_multiple_raw_tool_calls():
+    from agent import _parse_raw_tool_calls
+    text = (
+        "Here are the steps:\n"
+        "{\n  \"name\": \"make_dir\",\n  \"arguments\": {\"path\": \"./chatbox-x\"}\n}\n"
+        "And next:\n"
+        "{\n  \"name\": \"write_file\",\n  \"arguments\": {\"path\": \"./chatbox-x/README.md\", \"content\": \"# Chatbox\"}\n}"
+    )
+    calls = _parse_raw_tool_calls(text)
+    assert len(calls) == 2
+    assert calls[0]["function"]["name"] == "make_dir"
+    assert calls[1]["function"]["name"] == "write_file"
+
+
+def test_infer_filename_react_with_py_in_history():
+    from agent import _infer_filename_from_content
+    history = [
+        {"role": "user", "content": "Let's edit main.py and test it."},
+        {"role": "assistant", "content": "I checked main.py"}
+    ]
+    react_code = (
+        "'use client';\n"
+        "import React, { useState } from 'react';\n"
+        "export default function Chatbox() {\n"
+        "  const [msg, setMsg] = useState('');\n"
+        "  return <div>{msg}</div>;\n"
+        "}\n"
+    )
+    inferred = _infer_filename_from_content(react_code, history)
+    assert inferred is not None
+    assert "main.py" not in inferred
+    assert inferred.endswith(".tsx") or inferred.endswith(".jsx")
+

@@ -379,6 +379,22 @@ def _sanitize_json(content: str) -> str:
 def write_file(path: str, content: str) -> str:
     """Write or overwrite text or code to a file. Automatically creates backup if overwriting."""
     try:
+        if isinstance(content, dict):
+            if content.get("type") == "string" and "content" in content:
+                content = str(content["content"])
+            elif "content" in content:
+                content = str(content["content"])
+            elif "value" in content:
+                content = str(content["value"])
+            elif "text" in content:
+                content = str(content["text"])
+            elif "code" in content:
+                content = str(content["code"])
+            else:
+                content = json.dumps(content, indent=2)
+        elif not isinstance(content, str):
+            content = str(content or "")
+
         full = _p(path)
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
 
@@ -716,11 +732,12 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
                 m_lower = m_clean.lower()
                 if m_lower.endswith(".json") and ('"name"' in content or '"dependencies"' in content or '"compilerOptions"' in content):
                     return m_clean
-                if (m_lower.endswith(".tsx") or m_lower.endswith(".jsx")) and ("React" in content or "export default" in content or "useState" in content):
+                if (m_lower.endswith(".tsx") or m_lower.endswith(".jsx")) and ("React" in content or "export default" in content or "useState" in content or "use client" in content):
                     return m_clean
                 if m_lower.endswith(".ts") and ("export " in content or "import " in content):
                     return m_clean
-                if m_lower.endswith(".py") and ("def " in content or "import " in content):
+                is_js_or_react = bool(re.search(r'(\bconst\b|\blet\b|\bvar\b|\bfunction\b|\bfrom\s+[\'"]|import\s+React|useState|useRef|useEffect|\bexport\b|;\s*$|<[A-Z]\w*>)', content))
+                if m_lower.endswith(".py") and not is_js_or_react and ("def " in content or "import os" in content or "import sys" in content or "__main__" in content):
                     return m_clean
 
     # JSON configurations
@@ -738,8 +755,14 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
 
     # Next.js / React / TypeScript / JSX
     is_ts = bool(re.search(r'(interface\s+\w+|type\s+\w+\s*=|:\s*(string|number|boolean|any|void)\b|<[A-Z]\w*>)', content))
-    is_react = bool(re.search(r'(import\s+React|from\s+[\'"]react[\'"]|useState|useEffect|useRef|useMemo|useCallback|<[a-zA-Z]+[^>]*>)', content))
+    is_react = bool(re.search(r'(\'use client\'|"use client"|import\s+React|from\s+[\'"]react[\'"]|useState|useEffect|useRef|useMemo|useCallback|<[a-zA-Z]+[^>]*>)', content))
     has_export = bool(re.search(r'^(export\s+default|export\s+const|export\s+function|export\s+class)', content, re.MULTILINE))
+
+    comp_match = re.search(r'export\s+default\s+(?:function|const)\s+([A-Za-z0-9_]+)', content)
+    if comp_match:
+        comp_name = comp_match.group(1)
+        if is_react and comp_name not in ("App", "Page", "Home"):
+            return f"src/components/{comp_name}.tsx" if is_ts else f"src/components/{comp_name}.jsx"
 
     if "export async function GET" in content or "export async function POST" in content or "NextResponse" in content:
         return "route.ts" if is_ts else "route.js"
@@ -838,41 +861,95 @@ def _tool_call_parts(call) -> tuple[str, dict]:
 def _normalize_tool_args(name: str, args: dict) -> tuple[dict, str | None]:
     """Repair known local-model wrappers while keeping tool contracts strict."""
     normalized = dict(args)
-    if name == "write_file" and isinstance(normalized.get("content"), dict):
-        wrapped = normalized["content"]
-        if wrapped.get("type") == "string" and isinstance(wrapped.get("content"), str):
-            normalized["content"] = wrapped["content"]
-        else:
-            return normalized, "write_file content must be a string or a {type: 'string', content: '...'} wrapper."
+    if name == "write_file":
+        content = normalized.get("content")
+        if isinstance(content, dict):
+            if content.get("type") == "string" and "content" in content:
+                normalized["content"] = str(content["content"])
+            elif "content" in content:
+                normalized["content"] = str(content["content"])
+            elif "value" in content:
+                normalized["content"] = str(content["value"])
+            elif "text" in content:
+                normalized["content"] = str(content["text"])
+            elif "code" in content:
+                normalized["content"] = str(content["code"])
+            else:
+                normalized["content"] = json.dumps(content, indent=2)
+        elif not isinstance(content, str) and content is not None:
+            normalized["content"] = str(content)
+        elif content is None:
+            normalized["content"] = ""
+
+        path = normalized.get("path")
+        if isinstance(path, dict):
+            normalized["path"] = str(path.get("path") or path.get("file") or path.get("filename") or "")
+        elif not isinstance(path, str) and path is not None:
+            normalized["path"] = str(path)
+
+    elif name == "edit_file":
+        for k in ("old_str", "new_str", "path"):
+            v = normalized.get(k)
+            if isinstance(v, dict):
+                normalized[k] = str(v.get("content") or v.get("value") or v.get("text") or json.dumps(v))
+            elif not isinstance(v, str) and v is not None:
+                normalized[k] = str(v)
+
+    elif name == "run_command":
+        cmd = normalized.get("command")
+        if isinstance(cmd, dict):
+            normalized["command"] = str(cmd.get("command") or cmd.get("cmd") or cmd.get("value") or "")
+        elif not isinstance(cmd, str) and cmd is not None:
+            normalized["command"] = str(cmd)
+
     return normalized, None
 
 
 def _parse_raw_tool_calls(reply: str) -> list[dict]:
-    """Extract the first complete, schema-valid JSON action from model text.
-
-    Smaller local models may embed several planned actions in prose. Executing
-    only the first valid action preserves dependency order and lets the next
-    turn use the actual result instead of guessing ahead.
-    """
+    """Extract all complete, schema-valid JSON actions from model text."""
     decoder = json.JSONDecoder()
-    for start, character in enumerate(reply):
-        if character != "{":
-            continue
+    extracted = []
+    idx = 0
+    while idx < len(reply):
+        start = reply.find("{", idx)
+        if start == -1:
+            break
         try:
-            payload, _ = decoder.raw_decode(reply[start:])
+            payload, end = decoder.raw_decode(reply[start:])
+            idx = start + max(1, end)
+            if not isinstance(payload, dict):
+                continue
+            name = payload.get("name") or payload.get("tool")
+            if name == "create_dir":
+                name = "make_dir"
+            elif name == "git_clone":
+                name = "clone_repo"
+            has_arguments = any(key in payload for key in ("arguments", "parameters", "args"))
+            arguments = payload.get("arguments", payload.get("parameters", payload.get("args", {})))
+            if isinstance(name, str) and name in TOOLS and has_arguments and isinstance(arguments, dict):
+                extracted.append({"function": {"name": name, "arguments": arguments}})
         except json.JSONDecodeError:
+            idx = start + 1
             continue
-        if not isinstance(payload, dict):
+    return extracted
+
+
+def _extract_code_block_writes(reply: str, history: list) -> list[dict]:
+    """Fallback: extract code blocks with file paths or headers when model outputs prose code."""
+    blocks = re.findall(r'(?:###?\s*(?:file(?:name)?:\s*|path:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)\s*\n+)?```([a-zA-Z0-9_-]*)\n(.*?)```', reply, re.DOTALL)
+    calls = []
+    for file_hint, lang, code in blocks:
+        code_str = code.strip()
+        if not code_str or len(code_str) < 15:
             continue
-        name = payload.get("name") or payload.get("tool")
-        # qwen2.5-coder commonly uses this intuitive alias despite the schema.
-        if name == "create_dir":
-            name = "make_dir"
-        has_arguments = any(key in payload for key in ("arguments", "parameters", "args"))
-        arguments = payload.get("arguments", payload.get("parameters", payload.get("args", {})))
-        if isinstance(name, str) and name in TOOLS and has_arguments and isinstance(arguments, dict):
-            return [{"function": {"name": name, "arguments": arguments}}]
-    return []
+        target_path = file_hint.strip() if file_hint else None
+        if not target_path:
+            inferred = _infer_filename_from_content(code_str, history)
+            if inferred:
+                target_path = inferred
+        if target_path:
+            calls.append({"function": {"name": "write_file", "arguments": {"path": target_path, "content": code_str}}})
+    return calls
 
 
 def run_task(instruction: str, history: list, images: list = None) -> None:
@@ -883,7 +960,7 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
     if images:
         msg["images"] = images
     history.append(msg)
-    action_retry_used = False
+    consecutive_text_retries = 0
 
     for step in range(MAX_STEPS):
         if STOP_REQUESTED:
@@ -989,30 +1066,39 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         history.append(msg)
         tool_calls = list(msg.tool_calls or [])
 
-        # Fallback raw-JSON tool call parsing
+        # Fallback raw-JSON and markdown-block tool call parsing
         if not tool_calls:
             reply = msg.content.strip() if msg.content else ""
             extracted_tool_calls = _parse_raw_tool_calls(reply)
+            if not extracted_tool_calls:
+                extracted_tool_calls = _extract_code_block_writes(reply, history)
             if extracted_tool_calls:
                 tool_calls = extracted_tool_calls
                 history[-1] = {"role": "assistant", "content": reply, "tool_calls": tool_calls}
-                console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {len(tool_calls)} call(s) from model text[/dim]")
+                console.print(f"  [bold bright_green]🧠 AUTO-PARSED ACTIONS:[/bold bright_green] [dim]Extracted {len(tool_calls)} action(s) from model text[/dim]")
             else:
-                if action_retry_used or step == MAX_STEPS - 1:
+                consecutive_text_retries += 1
+                lower_reply = reply.lower()
+                is_completed = any(p in lower_reply for p in (
+                    "all steps completed", "work is complete", "task is complete", "project is ready",
+                    "successfully created", "setup is complete", "summary of"
+                ))
+                if is_completed or consecutive_text_retries >= 3 or step == MAX_STEPS - 1:
                     if reply:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
                         console.print()
                     return
-                action_retry_used = True
+
                 if reply:
                     console.print()
                     console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
-                console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]No valid tool call was returned. Requesting one schema-valid action (step {step+2}/{MAX_STEPS})...[/dim]")
-                history.append({"role": "user", "content": "Make exactly one next action using a tool from the supplied schema. Return a schema-valid tool call; do not invent a tool name."})
+                console.print(f"  [bold yellow]⚡ CONTINUING TASK:[/bold yellow] [dim]Requesting next action from schema (step {step+2}/{MAX_STEPS})...[/dim]")
+                history.append({"role": "user", "content": "Please continue with the remaining steps to fulfill the user's task. Output schema-valid tool calls (e.g. write_file, edit_file, run_command) for each file or command needed until the entire project is completed."})
                 continue
 
-        # Execute Tools
+        # Execute Tools and reset consecutive text retry counter
+        consecutive_text_retries = 0
         for call in tool_calls:
             if STOP_REQUESTED:
                 console.print("\n[bold red]🛑 [gembot]: Action aborted by user.[/bold red]\n")
@@ -1034,13 +1120,13 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 continue
 
             if name == "write_file":
-                path = args.get("path", "").strip()
+                path = args.get("path", "").strip() if isinstance(args.get("path"), str) else ""
                 content = args.get("content", "")
-                if not isinstance(content, str):
-                    result = "Error: write_file content must be a string."
-                    console.print(f"  [bold red]⚠ {result}[/bold red]")
-                    history.append({"role": "tool", "tool_name": name, "content": result})
-                    continue
+                if isinstance(content, dict):
+                    content = str(content.get("content") or json.dumps(content, indent=2))
+                elif not isinstance(content, str):
+                    content = str(content or "")
+
                 if not path:
                     inferred = _infer_filename_from_content(content, history)
                     if inferred:
