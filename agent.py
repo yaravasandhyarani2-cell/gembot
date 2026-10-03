@@ -875,9 +875,10 @@ GRADIENT_COLORS = [
 
 def print_banner() -> None:
     console.print()
+    banner_text = ""
     for i, line in enumerate(GEMBOT_LOGO):
         color = GRADIENT_COLORS[i % len(GRADIENT_COLORS)]
-        console.print(f"[{color}]{line}[/{color}]")
+        banner_text += f"[{color}]{line}[/{color}]\n"
 
     cwd = os.getcwd()
     git_branch = "unknown/unknown"
@@ -888,14 +889,26 @@ def print_banner() -> None:
     except Exception:
         pass
 
-    console.print()
-    console.print(f"[bold bright_magenta]Welcome to GEMBOT CLI![/bold bright_magenta]")
-    console.print(f"[dim]v2.0.0 • Autonomous Multi-Tool AI Agent with Self-Healing Tools[/dim]")
-    console.print(f"[bright_cyan]Active Model:[/bright_cyan] [bold white]{MODEL}[/bold white]  [dim](type [bold yellow]/models[/bold yellow] to change)[/dim]")
-    console.print(f"[bright_yellow]Working in:[/bright_yellow] [cyan]{cwd}[/cyan]  [dim]({git_branch})[/dim]")
-    console.print(f"[italic white]What would you like to build or automate today?[/italic white]")
-    console.print(f"[dim]Tip: Press [bold cyan]Ctrl+V[/bold cyan] while composing to attach a clipboard image, or type [bold cyan]/paste[/bold cyan]. Ordinary prompts never read the clipboard automatically.[/dim]")
-    console.print(f"[bold bright_red]Stop Execution:[/bold bright_red] [dim]Press [bold white]Ctrl+C[/bold white] anytime to immediately abort any running action.[/dim]")
+    info_text = (
+        f"{banner_text}\n"
+        f"[bold bright_magenta]✨ GEMBOT AUTONOMOUS AI AGENT CLI[/bold bright_magenta] [dim]• v2.0.0[/dim]\n"
+        f"[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]\n"
+        f" [bold bright_cyan]● MODEL:[/bold bright_cyan]     [bold white]{MODEL}[/bold white]  [dim]• type [bold yellow]/models[/bold yellow] to change[/dim]\n"
+        f" [bold bright_yellow]📂 FOLDER:[/bold bright_yellow]    [bold cyan]{cwd}[/bold cyan]  [dim]({git_branch})[/dim]\n"
+        f" [bold bright_green]⚡ TOOLS:[/bold bright_green]     [white]30 Autonomous Tools Active[/white] [dim](patch edits, backups, web browse)[/dim]\n"
+        f" [bold bright_blue]🌐 WEB APP:[/bold bright_blue]   [link=http://localhost:3000][bold underline bright_blue]http://localhost:3000[/bold underline bright_blue][/link]  [dim](BorderBeam & ThinkingOrbs UI)[/dim]\n"
+        f"[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]\n"
+        f" [italic white]What would you like to build or automate today?[/italic white]\n"
+        f" [dim]Shortcuts: [bold cyan]Ctrl+V[/bold cyan] attach image · [bold yellow]/plan[/bold yellow] checklist mode · [bold red]Ctrl+C[/bold red] abort[/dim]"
+    )
+
+    console.print(Panel(
+        info_text,
+        border_style="bright_magenta",
+        title="[bold bright_white on dark_magenta] 🤖 GEMBOT NEURAL CONSOLE [/bold bright_white on dark_magenta]",
+        subtitle="[bold dim]Autonomous Multi-Tool Self-Healing Loop[/bold dim]",
+        padding=(1, 2)
+    ))
     console.print()
 
 
@@ -1064,7 +1077,15 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             return container["resp"], None
 
         try:
-            status = Status(f"[bold bright_magenta]GEMBOT[/bold bright_magenta] [bright_cyan]thinking with {MODEL}[/bright_cyan] [dim](Step {step+1}/{MAX_STEPS}) • Press [bold white]Ctrl+C[/bold white] to stop...[/dim]", spinner="dots", console=console)
+            status = Status(
+                f"[bold bright_magenta]🔮 GEMBOT[/bold bright_magenta] "
+                f"[bold bright_cyan]Thinking Engine[/bold bright_cyan] "
+                f"[dim](Model: [bold white]{MODEL}[/bold white] • Step {step+1}/{MAX_STEPS})[/dim] "
+                f"[dim]• [bold red]Ctrl+C[/bold red] to stop[/dim]",
+                spinner="aesthetic",
+                spinner_style="bold bright_magenta",
+                console=console
+            )
             status.start()
         except Exception:
             status = None
@@ -1479,7 +1500,8 @@ def main() -> None:
     history = [{"role": "system", "content": build_system_prompt()}]
 
     custom_style = Style.from_dict({
-        'prompt': '#FFB703 bold',
+        'prompt': '#D946EF bold',
+        'toolbar': '#94A3B8 italic',
     })
     pending_clipboard_images = []
     input_key_bindings = make_terminal_key_bindings(pending_clipboard_images)
@@ -1489,14 +1511,14 @@ def main() -> None:
             count = len(pending_clipboard_images)
             label = "image" if count == 1 else "images"
             return HTML(f"<ansigreen>📎 {count} {label} attached</ansigreen>  <ansigray>Ctrl+V add more · Enter send · /paste [question] also works</ansigray>")
-        return HTML("<ansigray>Ctrl+V paste text or attach a clipboard image · /paste [question] also works</ansigray>")
+        return HTML("<ansigray>💡 Tip: Type / for commands (/plan, /undo, /tools, /models) · Web UI: http://localhost:3000</ansigray>")
 
     while True:
         # Always clear the stop flag before waiting for input
         _clear_stop_requested()
         try:
             task = prompt(
-                [('class:prompt', '> Search sessions or type / to use commands\ngembot> ')],
+                [('class:prompt', '┌──(gembot㉿terminal)-[autonomous]\n└─◆ ')],
                 style=custom_style,
                 key_bindings=input_key_bindings,
                 bottom_toolbar=input_toolbar,
