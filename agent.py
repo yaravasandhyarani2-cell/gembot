@@ -46,8 +46,6 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.status import Status
 from rich.live import Live
-from rich.align import Align
-from rich.console import Group
 from prompt_toolkit import prompt
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
@@ -148,8 +146,9 @@ _ORB_FRAMES = [
 class ThinkingOrbLive:
     """Large animated orb display for the terminal (~3cm diameter).
     
-    Uses Rich Live to render multi-line ASCII art frames that pulse/breathe
-    with color transitions, creating an orb effect similar to ThinkingOrb.
+    Uses Rich Live + Panel to render multi-line ASCII art frames that 
+    pulse/breathe with color transitions. Each frame is rendered as a
+    centered Panel with the orb art + status label below.
     """
     def __init__(self, label: str, console_obj=None):
         self._label = label
@@ -159,18 +158,22 @@ class ThinkingOrbLive:
         self._stop_event = threading.Event()
         self._thread = None
 
-    def _render_frame(self) -> Group:
-        """Build a Rich renderable for the current orb frame + label."""
+    def _render_frame(self):
+        """Build a Rich Panel renderable for the current orb frame + label."""
         frame_lines = _ORB_FRAMES[self._frame_idx % len(_ORB_FRAMES)]
-        orb_text = Text.from_markup("\n".join(frame_lines))
-        label_text = Text.from_markup(self._label)
-        return Group(
-            Align.center(orb_text),
-            Align.center(label_text),
+        # Build single markup string: orb art + blank line + label
+        orb_markup = "\n".join(frame_lines)
+        full_markup = f"{orb_markup}\n\n{self._label}"
+        content = Text.from_markup(full_markup, justify="center")
+        return Panel(
+            content,
+            border_style="bright_cyan",
+            padding=(1, 2),
+            expand=False,
         )
 
     def _animate(self):
-        """Background thread: advance frames at ~140ms intervals."""
+        """Background thread: advance frames at ~150ms intervals."""
         while not self._stop_event.is_set():
             self._frame_idx = (self._frame_idx + 1) % len(_ORB_FRAMES)
             try:
@@ -178,7 +181,7 @@ class ThinkingOrbLive:
                     self._live.update(self._render_frame())
             except Exception:
                 pass
-            self._stop_event.wait(0.14)
+            self._stop_event.wait(0.15)
 
     def start(self):
         """Start the animated orb display."""
@@ -186,7 +189,7 @@ class ThinkingOrbLive:
             self._live = Live(
                 self._render_frame(),
                 console=self._console,
-                refresh_per_second=10,
+                refresh_per_second=8,
                 transient=True,
             )
             self._live.start()
