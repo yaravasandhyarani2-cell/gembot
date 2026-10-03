@@ -60,7 +60,26 @@ from gembot_core.doc_tools import create_docx, read_docx, create_excel, read_exc
 from gembot_core.plugins import load_plugins
 from gembot_core.process_runner import cancel_active_process, run_process
 
+from rich.spinner import SPINNERS
+
 console = Console()
+
+# Custom Thinking Orb spinner for terminal interface
+SPINNERS["thinking_orb"] = {
+    "interval": 90,
+    "frames": [
+        "●  ",
+        "◐  ",
+        "◓  ",
+        "◑  ",
+        "◒  ",
+        "○  ",
+        "◌  ",
+        "◍  ",
+        "◎  ",
+        "●  "
+    ]
+}
 
 # Load runtime config
 CONFIG = load_config()
@@ -1078,12 +1097,12 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
 
         try:
             status = Status(
-                f"[bold bright_magenta]🔮 GEMBOT[/bold bright_magenta] "
+                f"[bold bright_magenta]GEMBOT[/bold bright_magenta] "
                 f"[bold bright_cyan]Thinking Engine[/bold bright_cyan] "
                 f"[dim](Model: [bold white]{MODEL}[/bold white] • Step {step+1}/{MAX_STEPS})[/dim] "
                 f"[dim]• [bold red]Ctrl+C[/bold red] to stop[/dim]",
-                spinner="aesthetic",
-                spinner_style="bold bright_magenta",
+                spinner="thinking_orb",
+                spinner_style="bold bright_cyan",
                 console=console
             )
             status.start()
