@@ -64,20 +64,18 @@ from rich.spinner import SPINNERS
 
 console = Console()
 
-# Custom Thinking Orb spinner for terminal interface
+# Custom Large Thinking Orb spinner for terminal interface
 SPINNERS["thinking_orb"] = {
-    "interval": 90,
+    "interval": 110,
     "frames": [
-        "●  ",
-        "◐  ",
-        "◓  ",
-        "◑  ",
-        "◒  ",
-        "○  ",
-        "◌  ",
-        "◍  ",
-        "◎  ",
-        "●  "
+        "🌕 ",
+        "🌖 ",
+        "🌗 ",
+        "🌘 ",
+        "🌑 ",
+        "🌒 ",
+        "🌓 ",
+        "🌔 "
     ]
 }
 
