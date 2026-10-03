@@ -835,6 +835,18 @@ def _tool_call_parts(call) -> tuple[str, dict]:
     return name, arguments
 
 
+def _normalize_tool_args(name: str, args: dict) -> tuple[dict, str | None]:
+    """Repair known local-model wrappers while keeping tool contracts strict."""
+    normalized = dict(args)
+    if name == "write_file" and isinstance(normalized.get("content"), dict):
+        wrapped = normalized["content"]
+        if wrapped.get("type") == "string" and isinstance(wrapped.get("content"), str):
+            normalized["content"] = wrapped["content"]
+        else:
+            return normalized, "write_file content must be a string or a {type: 'string', content: '...'} wrapper."
+    return normalized, None
+
+
 def _parse_raw_tool_calls(reply: str) -> list[dict]:
     """Extract the first complete, schema-valid JSON action from model text.
 
@@ -853,6 +865,9 @@ def _parse_raw_tool_calls(reply: str) -> list[dict]:
         if not isinstance(payload, dict):
             continue
         name = payload.get("name") or payload.get("tool")
+        # qwen2.5-coder commonly uses this intuitive alias despite the schema.
+        if name == "create_dir":
+            name = "make_dir"
         has_arguments = any(key in payload for key in ("arguments", "parameters", "args"))
         arguments = payload.get("arguments", payload.get("parameters", payload.get("args", {})))
         if isinstance(name, str) and name in TOOLS and has_arguments and isinstance(arguments, dict):
@@ -1011,9 +1026,21 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
                 history.append({"role": "tool", "tool_name": "invalid_tool_call", "content": result})
                 continue
 
+            args, argument_error = _normalize_tool_args(name, args)
+            if argument_error:
+                result = f"Error: {argument_error}"
+                console.print(f"  [bold red]⚠ {result}[/bold red]")
+                history.append({"role": "tool", "tool_name": name, "content": result})
+                continue
+
             if name == "write_file":
                 path = args.get("path", "").strip()
                 content = args.get("content", "")
+                if not isinstance(content, str):
+                    result = "Error: write_file content must be a string."
+                    console.print(f"  [bold red]⚠ {result}[/bold red]")
+                    history.append({"role": "tool", "tool_name": name, "content": result})
+                    continue
                 if not path:
                     inferred = _infer_filename_from_content(content, history)
                     if inferred:

@@ -27,6 +27,14 @@ def test_first_valid_action_is_extracted_from_a_plan():
     assert calls[0]["function"]["name"] == "clone_repo"
 
 
+def test_common_local_model_aliases_and_wrapped_file_content():
+    calls = agent._parse_raw_tool_calls('{"name":"create_dir","arguments":{"path":"project"}}')
+    assert calls[0]["function"]["name"] == "make_dir"
+    args, error = agent._normalize_tool_args("write_file", {"content": {"type": "string", "content": "hello"}})
+    assert error is None
+    assert args["content"] == "hello"
+
+
 def test_active_command_can_be_cancelled():
     timer = threading.Timer(0.2, cancel_active_process)
     started = time.monotonic()
