@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List
+from gembot_core.process_runner import run_process
 
 
 def edit_file(path: str, old_str: str, new_str: str) -> str:
@@ -181,7 +182,7 @@ def run_tests(cwd: str = ".") -> str:
         cmd = "pytest -v"
 
     try:
-        r = subprocess.run(cmd, cwd=str(base), shell=True, capture_output=True, text=True, timeout=90)
+        r = run_process(cmd, cwd=str(base), shell=True, timeout=90)
         out = (r.stdout + "\n" + r.stderr).strip()
         status = "PASSED" if r.returncode == 0 else f"FAILED (Exit Code {r.returncode})"
         return f"Test Runner: {cmd}\nStatus: {status}\n\nOutput:\n{out[:2500]}"

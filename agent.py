@@ -58,6 +58,7 @@ from gembot_core.memory import remember_fact, recall_fact, save_session, load_se
 from gembot_core.system_tools import take_screenshot, clipboard_read, clipboard_write, system_info, list_processes, kill_process, download_file, http_request
 from gembot_core.doc_tools import create_docx, read_docx, create_excel, read_excel
 from gembot_core.plugins import load_plugins
+from gembot_core.process_runner import cancel_active_process, run_process
 
 console = Console()
 
@@ -107,6 +108,7 @@ def sigint_handler(sig, frame):
         os._exit(1)
     _LAST_SIGINT_TIME = now
     _set_stop_requested()
+    cancel_active_process()
     # Use sys.stderr.write instead of console.print to avoid Rich re-entrancy issues
     try:
         sys.stderr.write("\n🛑 [gembot]: Ctrl+C received — aborting action... (press again to force quit)\n")
@@ -158,10 +160,12 @@ def load_gembot_project_context() -> str:
 def build_system_prompt() -> str:
     base = (
         "You are 'GEMBOT', an elite autonomous Windows AI coding and automation assistant. "
-        "You MUST use your tools to complete every task. NEVER just describe or plan — always ACT immediately.\n\n"
+        "Use the supplied tool schema to complete execution tasks.\n\n"
         "CRITICAL RULES:\n"
-        "- ALWAYS call a tool on EVERY response. Never output plain text without calling a tool when actions remain.\n"
-        "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
+        "- For work that changes files, runs commands, or researches, call one available tool immediately.\n"
+        "- Only use tool names and argument shapes present in the supplied schema. Never invent a tool.\n"
+        "- A plain-text answer is allowed after the work is complete or when you need the user to decide something.\n"
+        "- Use run_command for terminal work and git_publish after checking or testing the completed project.\n"
         "- Complete tasks fully — write ALL required files with complete code (never truncate, abbreviate, or use placeholders), run commands, and test thoroughly.\n"
         "- ALWAYS provide the full explicit 'path' argument when calling write_file or edit_file (e.g., 'Chatbox-X/package.json', 'src/app/page.tsx').\n"
         "- When asked to scaffold or build an application (e.g. Next.js, React, Node.js, Python), create every necessary file completely: package.json, configuration files, backend APIs, frontend UI components, styles, and documentation.\n"
@@ -404,86 +408,50 @@ def write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
-def run_command(command: str) -> str:
-    """Run a shell command autonomously with safety checks, real-time streaming, and smart timeout."""
-    global STOP_REQUESTED
+def run_command(command: str, cwd: str = ".", timeout: int = 0) -> str:
+    """Run a terminal command in a chosen working directory.
+
+    Args:
+        command: Command to run in the Windows terminal.
+        cwd: Working directory. Defaults to GEMBOT's current directory.
+        timeout: Maximum seconds to wait. Use 0 for the configured default.
+    """
     blocked = CONFIG.get("blocked_commands", [])
     is_d, desc = is_dangerous_command(command, blocked)
     if is_d:
         if not ask_user_confirmation(f"Command flagged as dangerous ({desc}): '{command}'"):
             return f"Action cancelled by safety gate: {desc}"
 
-    # --- Smart command preprocessing ---
-    # Auto-add non-interactive flags for known interactive installers
     cmd_lower = command.strip().lower()
     actual_command = command
-
-    # npx: ensure -y/--yes flag is present so it doesn't prompt "Ok to proceed?"
     if cmd_lower.startswith("npx ") and " -y " not in cmd_lower and " --yes " not in cmd_lower and not cmd_lower.startswith("npx -y") and not cmd_lower.startswith("npx --yes"):
         actual_command = "npx -y " + command[4:]
         console.print(f"  [dim cyan]↳ Auto-added -y flag for non-interactive execution[/dim cyan]")
 
-    # create-next-app: ensure --use-npm and non-interactive flags
     if "create-next-app" in cmd_lower and "--use-npm" not in cmd_lower:
         actual_command += " --use-npm"
 
-    # Detect long-running install/build commands and use extended timeout
     _LONG_RUNNING_PATTERNS = ["npm ", "npx ", "pip ", "pip3 ", "yarn ", "pnpm ", "cargo ", "dotnet ", "composer ",
                                "maven ", "mvn ", "gradle ", "go build", "go install", "docker ", "choco "]
     is_long_running = any(cmd_lower.startswith(p) or f" {p}" in cmd_lower for p in _LONG_RUNNING_PATTERNS)
-    effective_timeout = COMMAND_TIMEOUT * 5 if is_long_running else COMMAND_TIMEOUT  # 300s for installs
+    try:
+        effective_timeout = max(1, min(int(timeout), 3600)) if timeout else (COMMAND_TIMEOUT * 5 if is_long_running else COMMAND_TIMEOUT)
+    except (TypeError, ValueError):
+        return "Error: timeout must be a whole number of seconds."
+    workdir = _p(cwd)
+    if not os.path.isdir(workdir):
+        return f"Error: working directory '{workdir}' does not exist."
 
     console.print(f"  [bright_black]⚡ [gembot cmd]:[/bright_black] [bold yellow]{actual_command}[/bold yellow]")
     if is_long_running:
         console.print(f"  [dim]↳ Extended timeout: {effective_timeout}s (install/build detected)[/dim]")
 
     try:
-        # Use Popen + real-time line streaming so the user sees progress immediately.
-        # stdin=DEVNULL prevents commands from hanging on interactive prompts.
-        # CREATE_NEW_PROCESS_GROUP prevents the child from consuming the Ctrl+C signal.
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        proc = subprocess.Popen(
-            actual_command, shell=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True, creationflags=creationflags,
-            bufsize=1,  # Line-buffered for real-time output
-        )
-
-        output_lines = []
-        deadline = time.time() + effective_timeout
-
-        # Stream output line by line in real-time
-        for line in iter(proc.stdout.readline, ""):
-            if STOP_REQUESTED:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
-                return "Command aborted by user (Ctrl+C)."
-            if time.time() > deadline:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
-                partial = "\n".join(output_lines[-20:]) if output_lines else ""
-                return f"Error: Command timed out after {effective_timeout}s\nLast output:\n{partial}"
-
-            stripped = line.rstrip()
-            if stripped:
-                output_lines.append(stripped)
-                # Show real-time streaming output (last line only, compact)
-                console.print(f"     [dim]{stripped[:200]}[/dim]")
-
-        proc.wait(timeout=5)
-        out = "\n".join(output_lines).strip()
-        if proc.returncode != 0 and not out:
-            out = f"Command failed with exit code {proc.returncode}"
-        return _cut(out or f"Executed successfully (exit code {proc.returncode})")
+        result = run_process(actual_command, cwd=workdir, shell=True, timeout=effective_timeout)
+        out = (result.stdout + result.stderr).strip()
+        return _cut(out or f"Executed successfully (exit code {result.returncode})")
+    except subprocess.TimeoutExpired:
+        return f"Error: command timed out after {effective_timeout} seconds and was stopped."
     except Exception as e:
         return f"Error: {e}"
 
@@ -577,6 +545,58 @@ def git_commit_and_push(repo_path: str, commit_message: str, branch: str = "main
         return f"Git error: {e}"
 
 
+def clone_repo(repository: str, path: str) -> str:
+    """Clone a Git repository into a new, empty directory."""
+    try:
+        destination = _p(path)
+        if not repository.startswith(("https://", "http://", "git@")):
+            return "Error: repository must be an HTTPS, HTTP, or SSH Git URL."
+        if os.path.exists(destination) and os.listdir(destination):
+            return f"Error: destination '{destination}' already exists and is not empty."
+        os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+        result = run_process(["git", "clone", repository, destination], timeout=COMMAND_TIMEOUT)
+        output = (result.stdout + result.stderr).strip()
+        return _cut(output or f"Cloned '{repository}' to '{destination}'.") if result.returncode == 0 else f"Git clone failed: {output}"
+    except subprocess.TimeoutExpired:
+        return f"Error: git clone timed out after {COMMAND_TIMEOUT} seconds."
+    except Exception as e:
+        return f"Git clone error: {e}"
+
+
+def git_publish(repo_path: str = ".", commit_message: str = "Update project", branch: str = "") -> str:
+    """Stage, commit, and push a repository to its configured origin remote."""
+    try:
+        path = _p(repo_path)
+        if not os.path.isdir(os.path.join(path, ".git")):
+            return f"Error: '{path}' is not a Git repository. Clone or initialize it first."
+        remote = run_process(["git", "remote", "get-url", "origin"], cwd=path, timeout=COMMAND_TIMEOUT)
+        if remote.returncode != 0 or not remote.stdout.strip():
+            return "Error: no 'origin' remote is configured for this repository."
+        if not branch:
+            branch = run_process(["git", "branch", "--show-current"], cwd=path, timeout=COMMAND_TIMEOUT).stdout.strip()
+        if not branch:
+            return "Error: no current branch is checked out. Provide a branch name."
+        add = run_process(["git", "add", "-A"], cwd=path, timeout=COMMAND_TIMEOUT)
+        if add.returncode != 0:
+            return f"Git add failed: {add.stderr.strip() or add.stdout.strip()}"
+        status = run_process(["git", "status", "--porcelain"], cwd=path, timeout=COMMAND_TIMEOUT)
+        if status.returncode != 0:
+            return f"Git status failed: {status.stderr.strip() or status.stdout.strip()}"
+        committed = "No file changes to commit."
+        if status.stdout.strip():
+            commit = run_process(["git", "commit", "-m", commit_message], cwd=path, timeout=COMMAND_TIMEOUT)
+            if commit.returncode != 0:
+                return f"Git commit failed: {commit.stderr.strip() or commit.stdout.strip()}"
+            committed = commit.stdout.strip() or "Created commit."
+        pushed = run_process(["git", "push", "-u", "origin", branch], cwd=path, timeout=COMMAND_TIMEOUT)
+        output = (pushed.stdout + pushed.stderr).strip()
+        return f"{committed}\nPushed branch '{branch}' to origin.\n{output}" if pushed.returncode == 0 else f"{committed}\nGit push failed: {output}"
+    except subprocess.TimeoutExpired:
+        return f"Error: Git operation timed out after {COMMAND_TIMEOUT} seconds and was stopped."
+    except Exception as e:
+        return f"Git publish error: {e}"
+
+
 # ==================== TOOL REGISTRY ====================
 
 TOOLS = {
@@ -607,6 +627,8 @@ TOOLS = {
     "web_search": web_search,
     "browse_webpage": browse_webpage,
     "git_commit_and_push": git_commit_and_push,
+    "clone_repo": clone_repo,
+    "git_publish": git_publish,
     # Documents
     "create_docx": create_docx,
     "read_docx": read_docx,
@@ -798,6 +820,43 @@ def print_banner() -> None:
     console.print()
 
 
+def _tool_call_parts(call) -> tuple[str, dict]:
+    """Read an Ollama tool call from its model object or wire-format dict."""
+    function = call.get("function", {}) if isinstance(call, dict) else getattr(call, "function", None)
+    if isinstance(function, dict):
+        name, arguments = function.get("name"), function.get("arguments", {})
+    else:
+        name, arguments = getattr(function, "name", None), getattr(function, "arguments", {})
+    if isinstance(arguments, str):
+        arguments = json.loads(arguments)
+    if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+        raise ValueError("tool call must contain a function name and an arguments object")
+    return name, arguments
+
+
+def _parse_raw_tool_calls(reply: str) -> list[dict]:
+    """Convert complete raw JSON calls from local models to Ollama wire format."""
+    candidate = reply.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*([\[{][\s\S]*[\]}])\s*```", candidate, re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1)
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return []
+    entries = payload if isinstance(payload, list) else [payload]
+    calls = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return []
+        name = entry.get("name") or entry.get("tool")
+        arguments = entry.get("arguments", entry.get("parameters", entry.get("args", {})))
+        if not isinstance(name, str) or name not in TOOLS or not isinstance(arguments, dict):
+            return []
+        calls.append({"function": {"name": name, "arguments": arguments}})
+    return calls
+
+
 def run_task(instruction: str, history: list, images: list = None) -> None:
     global STOP_REQUESTED, MODEL
     _clear_stop_requested()
@@ -806,6 +865,7 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
     if images:
         msg["images"] = images
     history.append(msg)
+    action_retry_used = False
 
     for step in range(MAX_STEPS):
         if STOP_REQUESTED:
@@ -909,72 +969,44 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
 
         msg = resp.message
         history.append(msg)
+        tool_calls = list(msg.tool_calls or [])
 
         # Fallback raw-JSON tool call parsing
-        if not msg.tool_calls:
+        if not tool_calls:
             reply = msg.content.strip() if msg.content else ""
-            extracted_tool_calls = []
-            clean_reply = reply
-            if "```" in clean_reply:
-                m_code = re.search(r"```(?:json)?\s*([\[\{][\s\S]*?[\]\}])\s*```", clean_reply)
-                if m_code:
-                    clean_reply = m_code.group(1).strip()
-
-            class DummyFunc:
-                def __init__(self, name, arguments):
-                    self.name = name
-                    self.arguments = arguments
-
-            class DummyCall:
-                def __init__(self, function):
-                    self.function = function
-
-            try:
-                parsed_json = json.loads(clean_reply)
-                candidates = parsed_json if isinstance(parsed_json, list) else [parsed_json]
-                for item in candidates:
-                    if isinstance(item, dict) and ("name" in item or "tool" in item):
-                        tool_nm = item.get("name") or item.get("tool")
-                        tool_args = item.get("arguments") or item.get("parameters") or item.get("args") or {}
-                        if tool_nm in TOOLS and isinstance(tool_args, dict):
-                            extracted_tool_calls.append(DummyCall(DummyFunc(tool_nm, tool_args)))
-                            console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {tool_nm} from model text[/dim]")
-            except Exception:
-                pass
-
+            extracted_tool_calls = _parse_raw_tool_calls(reply)
             if extracted_tool_calls:
-                msg.tool_calls = extracted_tool_calls
+                tool_calls = extracted_tool_calls
+                history[-1] = {"role": "assistant", "content": reply, "tool_calls": tool_calls}
+                console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {len(tool_calls)} call(s) from model text[/dim]")
             else:
-                is_final = (
-                    step >= 1
-                    and len(reply) < 800
-                    and not any(kw in reply.lower() for kw in ["step 1", "step 2", "will create", "will write", "i will", "execution plan"])
-                )
-                if is_final or step == MAX_STEPS - 1:
+                if action_retry_used or step == MAX_STEPS - 1:
                     if reply:
                         console.print()
                         console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Response[/bold bright_magenta]", border_style="bright_magenta"))
                         console.print()
                     return
-                else:
-                    if reply:
-                        console.print()
-                        console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
-                    console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]Model planned but didn't act — pushing it to execute now (step {step+2}/{MAX_STEPS})...[/dim]")
-                    history.append({
-                        "role": "user",
-                        "content": "NOW EXECUTE: Stop describing and immediately call a tool to start. Write the file or run the command RIGHT NOW."
-                    })
-                    continue
+                action_retry_used = True
+                if reply:
+                    console.print()
+                    console.print(Panel(Markdown(reply), title="[bold bright_magenta]GEMBOT Thinking...[/bold bright_magenta]", border_style="dim magenta"))
+                console.print(f"  [bold yellow]⚡ RETRYING:[/bold yellow] [dim]No valid tool call was returned. Requesting one schema-valid action (step {step+2}/{MAX_STEPS})...[/dim]")
+                history.append({"role": "user", "content": "Make exactly one next action using a tool from the supplied schema. Return a schema-valid tool call; do not invent a tool name."})
+                continue
 
         # Execute Tools
-        for call in msg.tool_calls:
+        for call in tool_calls:
             if STOP_REQUESTED:
                 console.print("\n[bold red]🛑 [gembot]: Action aborted by user.[/bold red]\n")
                 return
 
-            name = call.function.name
-            args = dict(call.function.arguments)
+            try:
+                name, args = _tool_call_parts(call)
+            except (TypeError, ValueError, json.JSONDecodeError) as e:
+                result = f"Error: ignored malformed tool call: {e}."
+                console.print(f"  [bold red]⚠ {result}[/bold red]")
+                history.append({"role": "tool", "tool_name": "invalid_tool_call", "content": result})
+                continue
 
             if name == "write_file":
                 path = args.get("path", "").strip()
