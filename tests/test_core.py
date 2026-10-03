@@ -84,3 +84,53 @@ def test_auto_summarize_history():
     summarized = auto_summarize_history(hist, max_messages=10)
     assert len(summarized) <= 12
     assert "Previous Conversation Summary" in summarized[1]["content"]
+
+
+def test_infer_filename_react_tsx():
+    from agent import _infer_filename_from_content
+    react_code = (
+        "import React, { useState } from 'react';\n\n"
+        "interface Message {\n"
+        "  sender: 'user' | 'ai';\n"
+        "  text: string;\n"
+        "}\n\n"
+        "export default function HomePage() {\n"
+        "  const [input, setInput] = useState<string>('');\n"
+        "  return <div>{input}</div>;\n"
+        "}\n"
+    )
+    inferred = _infer_filename_from_content(react_code, [])
+    assert inferred == "page.tsx"
+
+
+def test_infer_filename_package_json():
+    from agent import _infer_filename_from_content
+    pkg_code = '{\n  "name": "chatbox-x",\n  "version": "0.1.0",\n  "dependencies": {\n    "next": "14.2.0"\n  }\n}'
+    inferred = _infer_filename_from_content(pkg_code, [])
+    assert inferred == "package.json"
+
+
+def test_infer_filename_python():
+    from agent import _infer_filename_from_content
+    py_code = "import os\nimport sys\n\ndef main():\n    print('Hello World')\n\nif __name__ == '__main__':\n    main()\n"
+    inferred = _infer_filename_from_content(py_code, [])
+    assert inferred == "main.py"
+
+
+def test_infer_filename_from_history():
+    from agent import _infer_filename_from_content
+    history = [{"role": "user", "content": "Please write the code for Chatbox-X/app/page.tsx now."}]
+    code = "import React from 'react'; export default function Page() { return <h1>Chat</h1>; }"
+    inferred = _infer_filename_from_content(code, history)
+    assert inferred == "Chatbox-X/app/page.tsx"
+
+
+def test_config_num_predict_and_ctx():
+    from gembot_core.config import DEFAULT_CONFIG, load_config
+    assert "num_predict" in DEFAULT_CONFIG
+    assert "num_ctx" in DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["num_predict"] >= 4096
+    assert DEFAULT_CONFIG["num_ctx"] >= 8192
+    cfg = load_config()
+    assert cfg["num_predict"] >= 4096
+    assert cfg["num_ctx"] >= 8192

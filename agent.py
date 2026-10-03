@@ -160,10 +160,11 @@ def build_system_prompt() -> str:
         "You are 'GEMBOT', an elite autonomous Windows AI coding and automation assistant. "
         "You MUST use your tools to complete every task. NEVER just describe or plan — always ACT immediately.\n\n"
         "CRITICAL RULES:\n"
-        "- ALWAYS call a tool on EVERY response. Never output text without calling a tool.\n"
+        "- ALWAYS call a tool on EVERY response. Never output plain text without calling a tool when actions remain.\n"
         "- Start executing immediately. Write the first file NOW, run the first command NOW.\n"
-        "- Complete tasks fully — write all files, run tests, push to git if asked.\n"
-        "- ALWAYS provide the 'path' argument when calling write_file or edit_file.\n"
+        "- Complete tasks fully — write ALL required files with complete code (never truncate, abbreviate, or use placeholders), run commands, and test thoroughly.\n"
+        "- ALWAYS provide the full explicit 'path' argument when calling write_file or edit_file (e.g., 'Chatbox-X/package.json', 'src/app/page.tsx').\n"
+        "- When asked to scaffold or build an application (e.g. Next.js, React, Node.js, Python), create every necessary file completely: package.json, configuration files, backend APIs, frontend UI components, styles, and documentation.\n"
         "- Use edit_file for updating parts of existing files instead of rewriting them completely.\n"
         "- After completing all task steps, give a brief clear summary."
     )
@@ -661,11 +662,11 @@ def ensure_ollama_running() -> bool:
 def _infer_filename_from_content(content: str, history: list) -> str | None:
     if not content or not content.strip():
         return None
-    first_lines = content[:1500]
+    first_lines = content[:2000]
     first_line = content.split("\n", 1)[0].strip()
 
     header_match = re.match(
-        r'^(?://|#|/\*|<!--)\s*(?:file(?:name)?:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)',
+        r'^(?://|#|/\*|<!--)\s*(?:file(?:name)?:\s*|path:\s*)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)',
         first_line,
         re.IGNORECASE,
     )
@@ -678,30 +679,74 @@ def _infer_filename_from_content(content: str, history: list) -> str | None:
         if "node" in first_line:
             return "script.js"
 
-    lang_patterns = [
-        (r'^(import |from .+ import |def |class )', ".py"),
-        (r'^(import .+ from |export |const |let |var |function )', ".js"),
-        (r'(React|useState|useEffect|jsx|tsx)', ".jsx"),
-        (r'^<!DOCTYPE html|^<html|^<head|^<body', ".html"),
-        (r'^(@import |@charset |body\s*\{|html\s*\{|\.[\w-]+\s*\{)', ".css"),
-        (r'^# .+', ".md"),
-    ]
-    detected_ext = None
-    for pattern, ext in lang_patterns:
-        if re.search(pattern, first_lines, re.MULTILINE):
-            detected_ext = ext
-            break
+    # Search history for explicitly mentioned file paths
+    if history:
+        for msg in reversed(history[-8:]):
+            text = ""
+            if isinstance(msg, dict):
+                text = str(msg.get("content", ""))
+            elif hasattr(msg, "content"):
+                text = str(getattr(msg, "content", ""))
+            matches = re.findall(r'[\s`\'"]([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]{1,5})[\s`\'"]', text)
+            for m in matches:
+                m_clean = m.replace("\\", "/").strip("./")
+                m_lower = m_clean.lower()
+                if m_lower.endswith(".json") and ('"name"' in content or '"dependencies"' in content or '"compilerOptions"' in content):
+                    return m_clean
+                if (m_lower.endswith(".tsx") or m_lower.endswith(".jsx")) and ("React" in content or "export default" in content or "useState" in content):
+                    return m_clean
+                if m_lower.endswith(".ts") and ("export " in content or "import " in content):
+                    return m_clean
+                if m_lower.endswith(".py") and ("def " in content or "import " in content):
+                    return m_clean
 
-    if detected_ext:
-        defaults = {
-            ".py": "main.py",
-            ".js": "index.js",
-            ".jsx": "App.jsx",
-            ".html": "index.html",
-            ".css": "styles.css",
-            ".md": "README.md",
-        }
-        return defaults.get(detected_ext, f"output{detected_ext}")
+    # JSON configurations
+    stripped = content.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        if '"dependencies"' in content or '"devDependencies"' in content or '"scripts"' in content:
+            return "package.json"
+        if '"compilerOptions"' in content:
+            return "tsconfig.json"
+        return "data.json"
+
+    # Git & Environment
+    if re.search(r'^(node_modules|\.next|\.env|\.turbo|dist|build|coverage)\b', content, re.MULTILINE):
+        return ".gitignore"
+
+    # Next.js / React / TypeScript / JSX
+    is_ts = bool(re.search(r'(interface\s+\w+|type\s+\w+\s*=|:\s*(string|number|boolean|any|void)\b|<[A-Z]\w*>)', content))
+    is_react = bool(re.search(r'(import\s+React|from\s+[\'"]react[\'"]|useState|useEffect|useRef|useMemo|useCallback|<[a-zA-Z]+[^>]*>)', content))
+    has_export = bool(re.search(r'^(export\s+default|export\s+const|export\s+function|export\s+class)', content, re.MULTILINE))
+
+    if "export async function GET" in content or "export async function POST" in content or "NextResponse" in content:
+        return "route.ts" if is_ts else "route.js"
+
+    if is_react:
+        if "RootLayout" in content or "<html" in content or "metadata" in content:
+            return "layout.tsx" if is_ts else "layout.jsx"
+        return "page.tsx" if is_ts else "App.jsx"
+
+    if is_ts and has_export:
+        return "index.ts"
+
+    # Python
+    has_python_patterns = bool(re.search(r'^(from\s+[a-zA-Z0-9_.]+\s+import\s+|import\s+[a-zA-Z0-9_, ]+$|def\s+[a-zA-Z0-9_]+\s*\(|class\s+[a-zA-Z0-9_]+\s*[:\(]|if\s+__name__\s*==\s*[\'"]__main__[\'"]:)', first_lines, re.MULTILINE))
+    has_js_tokens = bool(re.search(r'(\bconst\b|\blet\b|\bvar\b|\bfunction\b|\bfrom\s+[\'"]|\bexport\b|\bconsole\.log\b|\b=>\b|;\s*$)', first_lines, re.MULTILINE))
+
+    if has_python_patterns and not has_js_tokens:
+        return "main.py"
+
+    # HTML / CSS / Markdown
+    if re.search(r'^<!DOCTYPE html|^<html|^<head|^<body', first_lines, re.IGNORECASE | re.MULTILINE):
+        return "index.html"
+    if re.search(r'^(@import |@charset |@tailwind |body\s*\{|html\s*\{|\.[\w-]+\s*\{)', first_lines, re.MULTILINE):
+        return "globals.css"
+    if re.search(r'^#\s+.+', first_lines, re.MULTILINE):
+        return "README.md"
+
+    # General JS fallback
+    if has_js_tokens or has_export:
+        return "index.js"
 
     return None
 
@@ -782,7 +827,11 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
             client = ollama.Client()
             def _call():
                 try:
-                    container["resp"] = client.chat(model=model, messages=messages, tools=tools)
+                    options = {
+                        "num_predict": int(CONFIG.get("num_predict", 4096)),
+                        "num_ctx": int(CONFIG.get("num_ctx", 8192)),
+                    }
+                    container["resp"] = client.chat(model=model, messages=messages, tools=tools, options=options)
                 except Exception as e:
                     container["error"] = e
             t = threading.Thread(target=_call, daemon=True)
@@ -864,34 +913,37 @@ def run_task(instruction: str, history: list, images: list = None) -> None:
         # Fallback raw-JSON tool call parsing
         if not msg.tool_calls:
             reply = msg.content.strip() if msg.content else ""
-            extracted_tool_call = None
+            extracted_tool_calls = []
             clean_reply = reply
             if "```" in clean_reply:
-                m_code = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", clean_reply)
+                m_code = re.search(r"```(?:json)?\s*([\[\{][\s\S]*?[\]\}])\s*```", clean_reply)
                 if m_code:
                     clean_reply = m_code.group(1).strip()
 
-            if clean_reply.startswith("{") and clean_reply.endswith("}"):
-                try:
-                    parsed_json = json.loads(clean_reply)
-                    if isinstance(parsed_json, dict) and ("name" in parsed_json or "tool" in parsed_json):
-                        tool_nm = parsed_json.get("name") or parsed_json.get("tool")
-                        tool_args = parsed_json.get("arguments") or parsed_json.get("parameters") or parsed_json.get("args") or {}
-                        if tool_nm in TOOLS and isinstance(tool_args, dict):
-                            class DummyFunc:
-                                def __init__(self, name, arguments):
-                                    self.name = name
-                                    self.arguments = arguments
-                            class DummyCall:
-                                def __init__(self, function):
-                                    self.function = function
-                            extracted_tool_call = DummyCall(DummyFunc(tool_nm, tool_args))
-                            console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {tool_nm} from model text[/dim]")
-                except Exception:
-                    pass
+            class DummyFunc:
+                def __init__(self, name, arguments):
+                    self.name = name
+                    self.arguments = arguments
 
-            if extracted_tool_call:
-                msg.tool_calls = [extracted_tool_call]
+            class DummyCall:
+                def __init__(self, function):
+                    self.function = function
+
+            try:
+                parsed_json = json.loads(clean_reply)
+                candidates = parsed_json if isinstance(parsed_json, list) else [parsed_json]
+                for item in candidates:
+                    if isinstance(item, dict) and ("name" in item or "tool" in item):
+                        tool_nm = item.get("name") or item.get("tool")
+                        tool_args = item.get("arguments") or item.get("parameters") or item.get("args") or {}
+                        if tool_nm in TOOLS and isinstance(tool_args, dict):
+                            extracted_tool_calls.append(DummyCall(DummyFunc(tool_nm, tool_args)))
+                            console.print(f"  [bold bright_green]🧠 AUTO-PARSED RAW JSON TOOL CALL:[/bold bright_green] [dim]Extracted {tool_nm} from model text[/dim]")
+            except Exception:
+                pass
+
+            if extracted_tool_calls:
+                msg.tool_calls = extracted_tool_calls
             else:
                 is_final = (
                     step >= 1

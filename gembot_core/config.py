@@ -16,6 +16,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_steps": 16,
     "max_output": 2500,
     "max_history": 24,
+    "num_predict": 4096,
+    "num_ctx": 8192,
     "command_timeout": 120,
     "auto_confirm": False,
     "blocked_commands": [
@@ -57,6 +59,16 @@ def load_config() -> Dict[str, Any]:
     if os.getenv("MAX_OUTPUT"):
         try:
             cfg["max_output"] = int(os.getenv("MAX_OUTPUT"))
+        except ValueError:
+            pass
+    if os.getenv("NUM_PREDICT"):
+        try:
+            cfg["num_predict"] = int(os.getenv("NUM_PREDICT"))
+        except ValueError:
+            pass
+    if os.getenv("NUM_CTX"):
+        try:
+            cfg["num_ctx"] = int(os.getenv("NUM_CTX"))
         except ValueError:
             pass
 
