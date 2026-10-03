@@ -19,6 +19,14 @@ def test_invalid_raw_calls_are_rejected():
     assert agent._parse_raw_tool_calls('{"name":"not_a_tool","arguments":{}}') == []
 
 
+def test_first_valid_action_is_extracted_from_a_plan():
+    calls = agent._parse_raw_tool_calls(
+        'Step 1: {"name":"clone_repo","arguments":{"repository":"https://github.com/example/repo.git","path":"repo"}}\n'
+        'Step 2: {"name":"write_file","arguments":{"path":"repo/README.md","content":{"bad":"shape"}}}'
+    )
+    assert calls[0]["function"]["name"] == "clone_repo"
+
+
 def test_active_command_can_be_cancelled():
     timer = threading.Timer(0.2, cancel_active_process)
     started = time.monotonic()

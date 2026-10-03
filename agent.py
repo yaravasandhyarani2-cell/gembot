@@ -164,6 +164,7 @@ def build_system_prompt() -> str:
         "CRITICAL RULES:\n"
         "- For work that changes files, runs commands, or researches, call one available tool immediately.\n"
         "- Only use tool names and argument shapes present in the supplied schema. Never invent a tool.\n"
+        "- Make one next action at a time. If native tool calling is unavailable, output one JSON tool-call object only; do not embed several calls inside a plan.\n"
         "- A plain-text answer is allowed after the work is complete or when you need the user to decide something.\n"
         "- Use run_command for terminal work and git_publish after checking or testing the completed project.\n"
         "- Complete tasks fully — write ALL required files with complete code (never truncate, abbreviate, or use placeholders), run commands, and test thoroughly.\n"
@@ -835,26 +836,28 @@ def _tool_call_parts(call) -> tuple[str, dict]:
 
 
 def _parse_raw_tool_calls(reply: str) -> list[dict]:
-    """Convert complete raw JSON calls from local models to Ollama wire format."""
-    candidate = reply.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*([\[{][\s\S]*[\]}])\s*```", candidate, re.IGNORECASE)
-    if fenced:
-        candidate = fenced.group(1)
-    try:
-        payload = json.loads(candidate)
-    except json.JSONDecodeError:
-        return []
-    entries = payload if isinstance(payload, list) else [payload]
-    calls = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            return []
-        name = entry.get("name") or entry.get("tool")
-        arguments = entry.get("arguments", entry.get("parameters", entry.get("args", {})))
-        if not isinstance(name, str) or name not in TOOLS or not isinstance(arguments, dict):
-            return []
-        calls.append({"function": {"name": name, "arguments": arguments}})
-    return calls
+    """Extract the first complete, schema-valid JSON action from model text.
+
+    Smaller local models may embed several planned actions in prose. Executing
+    only the first valid action preserves dependency order and lets the next
+    turn use the actual result instead of guessing ahead.
+    """
+    decoder = json.JSONDecoder()
+    for start, character in enumerate(reply):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(reply[start:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        name = payload.get("name") or payload.get("tool")
+        has_arguments = any(key in payload for key in ("arguments", "parameters", "args"))
+        arguments = payload.get("arguments", payload.get("parameters", payload.get("args", {})))
+        if isinstance(name, str) and name in TOOLS and has_arguments and isinstance(arguments, dict):
+            return [{"function": {"name": name, "arguments": arguments}}]
+    return []
 
 
 def run_task(instruction: str, history: list, images: list = None) -> None:
