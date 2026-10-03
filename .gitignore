@@ -54,3 +54,4 @@ temp/
 scratch/
 .gembot/
 .pytest_cache/
+node_modules/

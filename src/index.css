@@ -3,9 +3,12 @@
 @layer base {
   body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #080910;
+    color: #e2e8f0;
+    overflow-x: hidden;
   }
   code, pre, .font-mono {
-    font-family: 'Fira Code', monospace;
+    font-family: 'Fira Code', 'JetBrains Mono', Consolas, monospace;
   }
 }
 
@@ -15,12 +18,57 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 17, 23, 0.6);
+  background: rgba(11, 13, 20, 0.7);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(147, 51, 234, 0.3);
-  border-radius: 3px;
+  background: rgba(147, 51, 234, 0.35);
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(147, 51, 234, 0.6);
+  background: rgba(168, 85, 247, 0.65);
+}
+
+/* Glowing terminal scanline & subtle animated background */
+.terminal-scanline {
+  background: linear-gradient(
+    rgba(18, 16, 38, 0) 50%, 
+    rgba(0, 0, 0, 0.25) 50%
+  ), linear-gradient(
+    90deg,
+    rgba(255, 0, 0, 0.03),
+    rgba(0, 255, 0, 0.01),
+    rgba(0, 0, 255, 0.03)
+  );
+  background-size: 100% 2px, 3px 100%;
+  pointer-events: none;
+}
+
+/* Terminal glowing pulse cursor */
+@keyframes terminalBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background-color: #c084fc;
+  box-shadow: 0 0 8px #c084fc;
+  vertical-align: middle;
+  animation: terminalBlink 1s infinite;
+  margin-left: 2px;
+}
+
+/* Subtle glow effects */
+.glow-purple {
+  box-shadow: 0 0 25px -5px rgba(168, 85, 247, 0.25);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.25);
+}
+
+.glow-emerald {
+  box-shadow: 0 0 25px -5px rgba(16, 185, 129, 0.25);
 }

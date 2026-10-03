@@ -5,21 +5,21 @@ import {
   FileCode, 
   CheckCircle2, 
   AlertTriangle, 
-  Loader2, 
   Terminal as TerminalIcon, 
   ChevronRight, 
   Copy, 
   Check, 
   Sparkles,
-  Paperclip,
   Shield,
   Layers,
-  FilePlus,
-  Play,
   Compass,
-  Folder
+  Cpu,
+  Zap,
+  Flame,
+  Activity,
+  Code2
 } from 'lucide-react';
-import { ChatMessage, ToolCallItem, AgentConfig } from '../types';
+import { ChatMessage, AgentConfig } from '../types';
 import { DirectoryPointerBar } from './DirectoryPointerBar';
 import { BorderBeam } from 'border-beam';
 import { ThinkingOrb } from 'thinking-orbs';
@@ -127,7 +127,11 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
   );
 
   return (
-    <div className="flex flex-col h-full bg-[#0b0c14] relative overflow-hidden font-mono text-xs sm:text-sm">
+    <div className="flex flex-col h-full bg-[#080912] relative overflow-hidden font-mono text-xs sm:text-sm selection:bg-purple-600/30 selection:text-purple-200">
+      {/* Background terminal grid glow & scanline */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,50,220,0.15),rgba(255,255,255,0))] pointer-events-none" />
+      <div className="absolute inset-0 terminal-scanline opacity-40 pointer-events-none" />
+
       {/* Active Local Folder & Directory Pointer Bar */}
       <DirectoryPointerBar 
         onDirectoryChange={onDirectoryChange}
@@ -137,22 +141,27 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
       {/* Messages Scroll Area */}
       <div 
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 space-y-4 font-mono scroll-smooth"
+        className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 font-mono scroll-smooth relative z-10"
       >
         {/* Banner with BorderBeam & ThinkingOrb */}
-        <BorderBeam size="md" colorVariant="ocean" strength={0.7} theme="dark">
-          <div className="bg-[#10121d] rounded-xl p-5 border border-purple-900/30 text-center select-none shadow-xl shadow-purple-950/20">
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-2">
-              <div className="p-1 rounded-full bg-purple-950/40 border border-purple-800/40 shadow-inner flex items-center justify-center">
+        <BorderBeam size="md" colorVariant="ocean" strength={0.75} theme="dark">
+          <div className="bg-[#0e111d]/90 backdrop-blur-md rounded-xl p-5 border border-purple-800/30 text-center select-none shadow-2xl shadow-purple-950/40 relative overflow-hidden">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-5 mb-2">
+              {/* ThinkingOrb avatar indicator */}
+              <div className="relative p-1 rounded-full bg-gradient-to-b from-purple-800/30 to-indigo-950/60 border border-purple-600/40 shadow-inner flex items-center justify-center group">
                 <ThinkingOrb 
                   state={isRunning ? "solving" : "breathing"} 
                   size={64} 
                   theme="dark" 
-                  speed={isRunning ? 1.4 : 1.0} 
+                  speed={isRunning ? 1.4 : 0.9} 
                 />
+                <span className="absolute -bottom-1 -right-1 px-1.5 py-0.5 rounded-full bg-purple-900 border border-purple-500/60 text-[9px] font-mono text-purple-200 shadow">
+                  {isRunning ? "RUN" : "LIVE"}
+                </span>
               </div>
+
               <div className="text-center sm:text-left">
-                <pre className="text-[8px] sm:text-[10px] leading-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-indigo-400 font-bold inline-block text-left mb-1">
+                <pre className="text-[7.5px] sm:text-[9.5px] leading-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-indigo-400 font-bold inline-block text-left mb-1.5 drop-shadow-md">
 {` ██████╗ ███████╗███╗   ███╗██████╗  ██████╗ ████████╗
 ██╔════╝ ██╔════╝████╗ ████║██╔══██╗██╔═══██╗╚══██╔══╝
 ██║  ███╗█████╗  ██╔████╔██║██████╔╝██║   ██║   ██║   
@@ -161,29 +170,33 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
  ╚═════╝ ╚══════╝╚═╝     ╚═╝╚═════╝  ╚═════╝    ╚═╝   `}
                 </pre>
                 <div className="flex items-center gap-2 justify-center sm:justify-start">
-                  <span className="text-xs font-semibold text-purple-300">
+                  <span className="text-xs font-semibold text-purple-200 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400/20" />
                     GEMBOT Autonomous AI Agent
                   </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/40 text-pink-300 border border-purple-700/50 flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/50 text-pink-300 border border-purple-700/60 flex items-center gap-1.5 shadow-sm">
                     <ThinkingOrb state={isRunning ? "weaving" : "breathing"} size={20} theme="dark" />
-                    {isRunning ? "Engine Active" : "Engine Ready"}
+                    {isRunning ? "Autonomous Engine Active" : "Autonomous Engine Ready"}
                   </span>
                 </div>
               </div>
             </div>
 
-            <div className="text-gray-300 font-sans text-xs max-w-xl mx-auto space-y-1">
+            <div className="text-gray-300 font-sans text-xs max-w-xl mx-auto space-y-1 mt-2">
               <p className="text-gray-400 text-[11px]">
-                Multi-tool agent with 30 tools, precision patch-editing, undo backups, and self-healing task loop.
+                Multi-tool agent with 30 autonomous tools, precision patch-editing, undo backups, and self-healing task loops.
               </p>
-              <div className="flex items-center justify-center gap-2 pt-2 text-[10px] text-gray-500 font-mono">
-                <span className="px-2 py-0.5 rounded bg-purple-950/60 border border-purple-900/40 text-purple-300">
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-2 text-[10px] text-gray-400 font-mono">
+                <span className="px-2 py-0.5 rounded bg-purple-950/70 border border-purple-800/40 text-purple-300 flex items-center gap-1">
+                  <Cpu className="w-3 h-3 text-purple-400" />
                   Model: {config.model}
                 </span>
-                <span className="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-900/40 text-emerald-300">
+                <span className="px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-800/40 text-emerald-300 flex items-center gap-1">
+                  <Shield className="w-3 h-3 text-emerald-400" />
                   Auto-Confirm: {config.auto_confirm ? 'ON' : 'OFF'}
                 </span>
-                <span className="px-2 py-0.5 rounded bg-indigo-950/60 border border-indigo-900/40 text-indigo-300">
+                <span className="px-2 py-0.5 rounded bg-indigo-950/70 border border-indigo-800/40 text-indigo-300 flex items-center gap-1">
+                  <Activity className="w-3 h-3 text-indigo-400" />
                   Max Steps: {config.max_steps}
                 </span>
               </div>
@@ -193,14 +206,14 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
         {/* Suggestion Chips */}
         {messages.length <= 1 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
-            <BorderBeam size="sm" colorVariant="colorful" strength={0.65} theme="dark">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+            <BorderBeam size="sm" colorVariant="colorful" strength={0.7} theme="dark">
               <button
                 onClick={() => onSendMessage("Build Chatbox-X: clean Next.js + Tailwind web application connecting to local Ollama with real-time text streaming, package.json, components, and git commit ready.")}
-                className="w-full h-full p-3 rounded-lg bg-[#121522] border border-purple-900/40 hover:border-purple-500/60 hover:bg-purple-950/20 text-left transition-all group"
+                className="w-full h-full p-3.5 rounded-lg bg-[#111422] border border-purple-900/40 hover:border-purple-500/70 hover:bg-purple-950/30 text-left transition-all group shadow-md"
               >
-                <div className="flex items-center gap-2 text-purple-400 font-semibold mb-1 text-xs">
-                  <Sparkles className="w-3.5 h-3.5 text-pink-400 group-hover:scale-110 transition-transform" />
+                <div className="flex items-center gap-2 text-purple-300 font-semibold mb-1 text-xs">
+                  <Sparkles className="w-4 h-4 text-pink-400 group-hover:scale-110 transition-transform" />
                   <span>Build Chatbox-X App</span>
                 </div>
                 <p className="text-[11px] text-gray-400">Scaffold full Next.js/Tailwind chatbox connected to Ollama without early termination.</p>
@@ -209,10 +222,10 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
             <button
               onClick={() => onSendMessage("/plan Scaffold a full-stack REST API with user authentication, SQLite database, and test suite")}
-              className="p-3 rounded-lg bg-[#121522] border border-purple-900/40 hover:border-purple-500/60 hover:bg-purple-950/20 text-left transition-all group"
+              className="p-3.5 rounded-lg bg-[#111422] border border-purple-900/40 hover:border-indigo-500/70 hover:bg-indigo-950/30 text-left transition-all group shadow-md"
             >
-              <div className="flex items-center gap-2 text-indigo-400 font-semibold mb-1 text-xs">
-                <Layers className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform" />
+              <div className="flex items-center gap-2 text-indigo-300 font-semibold mb-1 text-xs">
+                <Layers className="w-4 h-4 text-indigo-400 group-hover:scale-110 transition-transform" />
                 <span>Checklist Plan Mode</span>
               </div>
               <p className="text-[11px] text-gray-400">Break complex fullstack requirements into ordered execution checklist.</p>
@@ -220,25 +233,27 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
             <button
               onClick={() => onSendMessage("Run system_info diagnostics and check CPU, RAM, and workspace health")}
-              className="p-3 rounded-lg bg-[#121522] border border-purple-900/40 hover:border-purple-500/60 hover:bg-purple-950/20 text-left transition-all group"
+              className="p-3.5 rounded-lg bg-[#111422] border border-purple-900/40 hover:border-emerald-500/70 hover:bg-emerald-950/30 text-left transition-all group shadow-md"
             >
-              <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-1 text-xs">
-                <TerminalIcon className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+              <div className="flex items-center gap-2 text-emerald-300 font-semibold mb-1 text-xs">
+                <TerminalIcon className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
                 <span>System Diagnostics</span>
               </div>
               <p className="text-[11px] text-gray-400">Inspect live hardware usage, OS specs, and sandbox environment state.</p>
             </button>
 
-            <button
-              onClick={() => onSendMessage("/dir")}
-              className="p-3 rounded-lg bg-[#121522] border border-purple-900/40 hover:border-purple-500/60 hover:bg-purple-950/20 text-left transition-all group sm:col-span-2 lg:col-span-3"
-            >
-              <div className="flex items-center gap-2 text-pink-400 font-semibold mb-1 text-xs">
-                <Compass className="w-3.5 h-3.5 text-pink-400 group-hover:scale-110 transition-transform" />
-                <span>Point Out File Directory</span>
-              </div>
-              <p className="text-[11px] text-gray-400">Inspect active local folder, list all subdirectories, and point Gembot to any directory.</p>
-            </button>
+            <BorderBeam size="sm" colorVariant="sunset" strength={0.65} theme="dark">
+              <button
+                onClick={() => onSendMessage("/dir")}
+                className="w-full p-3 rounded-lg bg-[#111422] border border-purple-900/40 hover:border-pink-500/70 hover:bg-pink-950/20 text-left transition-all group sm:col-span-2 lg:col-span-3 shadow-md"
+              >
+                <div className="flex items-center gap-2 text-pink-300 font-semibold mb-1 text-xs">
+                  <Compass className="w-4 h-4 text-pink-400 group-hover:scale-110 transition-transform" />
+                  <span>Point Out File Directory</span>
+                </div>
+                <p className="text-[11px] text-gray-400">Inspect active local folder, list all subdirectories, and point Gembot to any directory.</p>
+              </button>
+            </BorderBeam>
           </div>
         )}
 
@@ -246,82 +261,89 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
         {messages.map((msg) => (
           <div key={msg.id} className="space-y-2">
             {msg.role === 'user' ? (
-              <div className="flex items-start gap-2 bg-[#171a29]/80 border border-purple-900/30 rounded-lg p-3">
-                <div className="w-6 h-6 rounded bg-purple-700/60 flex items-center justify-center shrink-0 mt-0.5">
-                  <ChevronRight className="w-4 h-4 text-purple-200" />
+              <BorderBeam size="sm" colorVariant="mono" strength={0.5} theme="dark">
+                <div className="flex items-start gap-3 bg-[#151828]/90 border border-purple-900/40 rounded-xl p-3.5 shadow-lg">
+                  <div className="w-6 h-6 rounded-md bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shrink-0 mt-0.5 shadow">
+                    <ChevronRight className="w-4 h-4 text-white" />
+                  </div>
+                  <div className="flex-1 overflow-x-auto whitespace-pre-wrap font-sans text-gray-100 text-xs sm:text-sm leading-relaxed">
+                    {msg.content}
+                  </div>
                 </div>
-                <div className="flex-1 overflow-x-auto whitespace-pre-wrap font-sans text-gray-100 text-xs sm:text-sm">
-                  {msg.content}
-                </div>
-              </div>
+              </BorderBeam>
             ) : (
               <div className="space-y-3">
                 {/* Step info pill if available */}
                 {msg.stepInfo && (
-                  <div className="flex items-center gap-2 text-[10px] text-purple-400/80 font-mono">
-                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+                  <div className="flex items-center gap-2 text-[10px] text-purple-400 font-mono">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
                     <span>Autonomous Cycle: Step {msg.stepInfo.current} / {msg.stepInfo.max}</span>
                   </div>
                 )}
 
                 {/* Assistant Content / Thoughts */}
                 {msg.content && (
-                  <div className="bg-[#10121d] border border-purple-900/20 rounded-lg p-3 text-gray-200 font-sans leading-relaxed text-xs sm:text-sm">
+                  <div className="bg-[#0f1220]/90 border border-purple-900/30 rounded-xl p-3.5 text-gray-200 font-sans leading-relaxed text-xs sm:text-sm shadow-md">
                     <div className="whitespace-pre-wrap">{msg.content}</div>
                   </div>
                 )}
 
                 {/* Tool Executions */}
                 {msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     {msg.toolCalls.map((call) => {
-                      const isWritingCode = call.name === 'write_file';
-                      const isRunning = call.status === 'running';
+                      const isWritingCode = call.name === 'write_file' || call.name === 'edit_file';
+                      const isRunningTool = call.status === 'running';
 
                       const cardContent = (
                         <div 
-                          className="rounded-lg border border-purple-900/40 bg-[#0f111c] overflow-hidden"
+                          className="rounded-xl border border-purple-900/40 bg-[#0c0e18] overflow-hidden shadow-lg transition-all"
                         >
                           {/* Tool Header */}
-                          <div className="bg-[#141824] px-3 py-2 flex items-center justify-between border-b border-purple-900/30">
-                            <div className="flex items-center gap-2">
+                          <div className="bg-[#121626] px-3.5 py-2.5 flex items-center justify-between border-b border-purple-900/30">
+                            <div className="flex items-center gap-2.5">
                               {call.status === 'running' ? (
                                 <ThinkingOrb 
                                   state={
                                     call.name.includes('search') ? 'searching' :
-                                    call.name.includes('write') ? 'shaping' :
+                                    call.name.includes('write') || call.name.includes('edit') ? 'shaping' :
                                     call.name.includes('plan') ? 'weaving' :
+                                    call.name.includes('command') ? 'connecting' :
                                     'working'
                                   } 
                                   size={20} 
                                   theme="dark" 
+                                  speed={1.2}
                                 />
                               ) : call.status === 'completed' ? (
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                               ) : call.status === 'error' ? (
-                                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                <AlertTriangle className="w-4 h-4 text-rose-400" />
                               ) : (
-                                <Shield className="w-3.5 h-3.5 text-amber-400" />
+                                <Shield className="w-4 h-4 text-amber-400" />
                               )}
 
-                              <span className="font-mono font-semibold text-purple-300">
-                                {call.name}
-                              </span>
-
-                              {call.args.path && (
-                                <span 
-                                  onClick={() => onOpenWorkspaceFile && onOpenWorkspaceFile(call.args.path)}
-                                  className="text-gray-400 text-[11px] font-mono hover:text-purple-300 hover:underline cursor-pointer truncate max-w-xs"
-                                >
-                                  {call.args.path}
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-purple-300 flex items-center gap-1 text-xs sm:text-sm">
+                                  <TerminalIcon className="w-3.5 h-3.5 text-purple-400/80" />
+                                  {call.name}
                                 </span>
-                              )}
+
+                                {call.args.path && (
+                                  <span 
+                                    onClick={() => onOpenWorkspaceFile && onOpenWorkspaceFile(call.args.path)}
+                                    className="text-gray-400 text-[11px] font-mono hover:text-purple-300 hover:underline cursor-pointer truncate max-w-xs bg-purple-950/40 px-2 py-0.5 rounded border border-purple-900/40"
+                                  >
+                                    {call.args.path}
+                                  </span>
+                                )}
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-2">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-medium ${
                                 call.status === 'completed' ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800/40' :
-                                call.status === 'running' ? 'bg-purple-950/80 text-purple-300 border border-purple-800/40 animate-pulse' :
+                                call.status === 'running' ? 'bg-purple-950/80 text-purple-300 border border-purple-700/60 animate-pulse' :
                                 call.status === 'awaiting_confirmation' ? 'bg-amber-950/80 text-amber-300 border border-amber-800/40' :
                                 'bg-rose-950/80 text-rose-300 border border-rose-800/40'
                               }`}>
@@ -329,40 +351,63 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
                               </span>
                               <button
                                 onClick={() => copyToClipboard(JSON.stringify(call.args, null, 2), call.id)}
-                                className="text-gray-500 hover:text-gray-300"
-                                title="Copy args"
+                                className="text-gray-400 hover:text-gray-200 p-1 hover:bg-white/5 rounded transition-colors"
+                                title="Copy tool parameters"
                               >
-                                {copiedId === call.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                                {copiedId === call.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                               </button>
                             </div>
                           </div>
 
                           {/* Arguments / Live Code Preview */}
                           {call.name === 'write_file' && typeof call.args.content === 'string' && (
-                            <div className="p-3 bg-[#0a0c14] border-b border-purple-950/40">
-                              <div className="flex items-center justify-between text-[11px] text-purple-400/90 mb-1.5">
-                                <span className="flex items-center gap-1 font-mono">
-                                  <FileCode className="w-3 h-3 text-pink-400" />
-                                  Live Code Generator: {call.args.path || 'file'}
+                            <div className="p-3.5 bg-[#090b14] border-b border-purple-950/50">
+                              <div className="flex items-center justify-between text-[11px] text-purple-300 mb-2 font-mono">
+                                <span className="flex items-center gap-1.5 font-semibold">
+                                  <FileCode className="w-3.5 h-3.5 text-pink-400" />
+                                  Live Code Synthesizer: {call.args.path || 'file'}
                                 </span>
-                                <span className="text-[10px] text-gray-500">
-                                  {call.args.content.split('\n').length} lines
+                                <span className="text-[10px] text-gray-400 bg-purple-950/50 px-2 py-0.5 rounded border border-purple-900/30">
+                                  {call.args.content.split('\n').length} lines · {call.args.content.length} chars
                                 </span>
                               </div>
-                              <pre className="text-[11px] text-gray-300 bg-[#07080e] p-2.5 rounded border border-purple-900/20 max-h-48 overflow-y-auto whitespace-pre font-mono">
-                                {call.args.content.slice(0, 1500)}
-                                {call.args.content.length > 1500 ? `\n... [+${call.args.content.length - 1500} more characters]` : ''}
+                              <pre className="text-[11px] text-gray-200 bg-[#06070c] p-3 rounded-lg border border-purple-900/30 max-h-52 overflow-y-auto whitespace-pre font-mono leading-relaxed shadow-inner">
+                                {call.args.content.slice(0, 1600)}
+                                {call.args.content.length > 1600 ? `\n... [+${call.args.content.length - 1600} more characters]` : ''}
                               </pre>
+                            </div>
+                          )}
+
+                          {/* Precision Edit Diff Preview */}
+                          {call.name === 'edit_file' && (
+                            <div className="p-3.5 bg-[#090b14] border-b border-purple-950/50 font-mono text-[11px]">
+                              <div className="text-purple-300 font-semibold mb-1.5 flex items-center gap-1.5">
+                                <Code2 className="w-3.5 h-3.5 text-indigo-400" />
+                                Precision Patch Edit: {call.args.path}
+                              </div>
+                              {call.args.old_str && (
+                                <div className="p-2 rounded bg-rose-950/20 border border-rose-900/30 text-rose-300 mb-1.5 max-h-24 overflow-y-auto whitespace-pre">
+                                  - {call.args.old_str}
+                                </div>
+                              )}
+                              {call.args.new_str && (
+                                <div className="p-2 rounded bg-emerald-950/20 border border-emerald-900/30 text-emerald-300 max-h-24 overflow-y-auto whitespace-pre">
+                                  + {call.args.new_str}
+                                </div>
+                              )}
                             </div>
                           )}
 
                           {/* Tool Result */}
                           {call.result && (
-                            <div className="p-2.5 bg-[#0c0d16] text-[11px] font-mono text-gray-300 overflow-x-auto whitespace-pre-wrap">
-                              <span className="text-gray-500">↳ Result: </span>
-                              <span className={call.status === 'error' ? 'text-rose-300' : 'text-emerald-300/90'}>
-                                {call.result}
-                              </span>
+                            <div className="p-3 bg-[#0a0c16] text-[11px] font-mono text-gray-300 overflow-x-auto whitespace-pre-wrap flex items-start gap-2">
+                              <span className="text-purple-400 select-none">↳</span>
+                              <div className="flex-1">
+                                <span className="text-gray-400">Result: </span>
+                                <span className={call.status === 'error' ? 'text-rose-300 font-semibold' : 'text-emerald-300/90'}>
+                                  {call.result}
+                                </span>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -370,15 +415,15 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
                       if (isWritingCode) {
                         return (
-                          <BorderBeam key={call.id} size="md" colorVariant="sunset" strength={0.75} theme="dark">
+                          <BorderBeam key={call.id} size="md" colorVariant="sunset" strength={0.8} theme="dark">
                             {cardContent}
                           </BorderBeam>
                         );
                       }
 
-                      if (isRunning) {
+                      if (isRunningTool) {
                         return (
-                          <BorderBeam key={call.id} size="sm" colorVariant="ocean" strength={0.7} theme="dark">
+                          <BorderBeam key={call.id} size="sm" colorVariant="ocean" strength={0.8} theme="dark">
                             {cardContent}
                           </BorderBeam>
                         );
@@ -395,35 +440,35 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
         {/* Safety Gate Confirmation Prompt */}
         {pendingConfirmation && (
-          <BorderBeam size="md" colorVariant="sunset" strength={0.85} theme="dark">
-            <div className="bg-amber-950/30 border border-amber-500/50 rounded-lg p-4 animate-in fade-in duration-200">
-              <div className="flex items-start gap-3">
-                <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 shrink-0">
-                  <AlertTriangle className="w-5 h-5" />
+          <BorderBeam size="md" colorVariant="sunset" strength={0.9} theme="dark">
+            <div className="bg-[#181116] border border-amber-500/50 rounded-xl p-4 sm:p-5 shadow-2xl">
+              <div className="flex items-start gap-3.5">
+                <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 shrink-0 border border-amber-500/30">
+                  <AlertTriangle className="w-5 h-5 animate-pulse" />
                 </div>
-                <div className="flex-1 space-y-2">
+                <div className="flex-1 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-semibold text-amber-300 text-sm">
-                      ⚠ SAFETY GATE: Confirmation Required
+                    <h4 className="font-semibold text-amber-300 text-sm flex items-center gap-1.5">
+                      <span>⚠ SAFETY GATE: Confirmation Required</span>
                     </h4>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-900/60 text-amber-200 border border-amber-700/50">
                       /auto is off
                     </span>
                   </div>
-                  <p className="text-gray-300 text-xs font-mono">
+                  <p className="text-gray-200 text-xs font-mono bg-black/40 p-2.5 rounded-lg border border-amber-900/40">
                     {pendingConfirmation.actionDesc}
                   </p>
                   <div className="flex items-center gap-2 pt-1">
                     <button
                       onClick={() => onConfirmAction(pendingConfirmation.id, true)}
-                      className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shadow"
+                      className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shadow-lg shadow-emerald-950/50"
                     >
                       <Check className="w-3.5 h-3.5" />
                       <span>Proceed (Execute)</span>
                     </button>
                     <button
                       onClick={() => onConfirmAction(pendingConfirmation.id, false)}
-                      className="px-3 py-1.5 rounded-md bg-rose-950/80 border border-rose-800/60 hover:bg-rose-900 text-rose-300 font-medium text-xs transition-colors"
+                      className="px-4 py-2 rounded-lg bg-rose-950/80 border border-rose-800/60 hover:bg-rose-900 text-rose-300 font-medium text-xs transition-colors"
                     >
                       Cancel Action
                     </button>
@@ -436,17 +481,17 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
         {/* Running Progress Bar with ThinkingOrb */}
         {isRunning && (
-          <BorderBeam size="sm" colorVariant="ocean" strength={0.8} theme="dark">
-            <div className="flex items-center gap-3 text-purple-300 font-mono text-xs bg-[#101322] border border-purple-800/40 p-3 rounded-lg shadow-lg">
+          <BorderBeam size="sm" colorVariant="ocean" strength={0.85} theme="dark">
+            <div className="flex items-center gap-3 text-purple-200 font-mono text-xs bg-[#101426]/95 border border-purple-700/50 p-3.5 rounded-xl shadow-xl">
               <ThinkingOrb state="weaving" size={20} theme="dark" speed={1.3} />
               <div className="flex-1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
                 <div>
-                  <span className="font-semibold text-white">GEMBOT Thought Engine:</span>
+                  <span className="font-semibold text-white">GEMBOT Reasoning Engine:</span>
                   <span className="text-purple-300 ml-1.5 font-mono">Synthesizing autonomous actions & streaming code...</span>
                 </div>
-                <span className="text-[10px] text-pink-400 font-mono flex items-center gap-1">
+                <span className="text-[10px] text-pink-400 font-mono flex items-center gap-1.5 bg-pink-950/50 px-2 py-0.5 rounded-full border border-pink-800/40">
                   <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-ping" />
-                  Reasoning
+                  Active Loop
                 </span>
               </div>
             </div>
@@ -456,20 +501,20 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
 
       {/* Slash command dropdown */}
       {showSlashMenu && filteredSlash.length > 0 && (
-        <div className="absolute bottom-20 left-4 right-4 sm:left-6 sm:right-6 max-h-56 overflow-y-auto bg-[#141726] border border-purple-800/60 rounded-xl shadow-2xl p-1.5 z-30 space-y-1">
-          <div className="text-[10px] text-gray-400 px-2 py-1 font-mono uppercase tracking-wider">
-            Available Slash Commands
+        <div className="absolute bottom-20 left-4 right-4 sm:left-6 sm:right-6 max-h-60 overflow-y-auto bg-[#131626]/95 backdrop-blur-md border border-purple-700/60 rounded-xl shadow-2xl p-2 z-30 space-y-1">
+          <div className="text-[10px] text-purple-400 px-2 py-1 font-mono uppercase tracking-wider font-semibold">
+            Interactive Slash Commands
           </div>
           {filteredSlash.map((item) => (
             <button
               key={item.cmd}
               onClick={() => handleSelectSlash(item.cmd)}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-purple-900/40 flex items-center justify-between text-xs transition-colors group"
+              className="w-full text-left px-3 py-2 rounded-lg hover:bg-purple-900/40 flex items-center justify-between text-xs transition-colors group"
             >
-              <span className="font-mono text-purple-300 group-hover:text-purple-200 font-semibold">
+              <span className="font-mono text-purple-300 group-hover:text-purple-100 font-semibold">
                 {item.cmd}
               </span>
-              <span className="text-gray-400 text-[11px] truncate max-w-xs">
+              <span className="text-gray-400 text-[11px] truncate max-w-xs group-hover:text-gray-300">
                 {item.desc}
               </span>
             </button>
@@ -478,51 +523,53 @@ export const AgentTerminal: React.FC<AgentTerminalProps> = ({
       )}
 
       {/* Input Form Bar */}
-      <div className="p-3 border-t border-purple-900/30 bg-[#0e101a]">
-        <div className="relative flex items-center bg-[#131624] border border-purple-900/50 rounded-xl focus-within:border-purple-500/80 focus-within:ring-1 focus-within:ring-purple-500/30 shadow-inner">
-          <div className="pl-3 text-purple-400 font-mono font-bold select-none text-xs">
-            gembot&gt;
-          </div>
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            placeholder="Type task, paste code, or type / for commands (/plan, /undo, /tools)..."
-            className="w-full bg-transparent px-3 py-3 text-xs sm:text-sm text-gray-100 placeholder-gray-500 focus:outline-none resize-none font-mono max-h-32"
-          />
+      <div className="p-3.5 border-t border-purple-900/40 bg-[#0b0d18]/95 backdrop-blur-md relative z-10">
+        <BorderBeam size="sm" colorVariant="ocean" strength={0.5} theme="dark" active={isRunning}>
+          <div className="relative flex items-center bg-[#111424] border border-purple-800/50 rounded-xl focus-within:border-purple-500 focus-within:ring-2 focus-within:ring-purple-500/20 shadow-inner">
+            <div className="pl-3.5 text-purple-400 font-mono font-bold select-none text-xs flex items-center gap-1.5">
+              <span>gembot&gt;</span>
+            </div>
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder="Type task, paste code, or type / for commands (/plan, /undo, /tools)..."
+              className="w-full bg-transparent px-3 py-3 text-xs sm:text-sm text-gray-100 placeholder-gray-500 focus:outline-none resize-none font-mono max-h-32"
+            />
 
-          <div className="flex items-center gap-1.5 pr-2">
-            {isRunning ? (
-              <button
-                onClick={onStop}
-                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs flex items-center gap-1 shadow-lg shadow-rose-950/40 transition-all"
-                title="Stop execution (Ctrl+C)"
-              >
-                <Square className="w-3 h-3 fill-current" />
-                <span>Stop</span>
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!input.trim()}
-                className={`p-2 rounded-lg font-mono text-xs flex items-center justify-center transition-all ${
-                  input.trim()
-                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-950/50'
-                    : 'text-gray-600 cursor-not-allowed'
-                }`}
-                title="Send task"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            )}
+            <div className="flex items-center gap-1.5 pr-2.5">
+              {isRunning ? (
+                <button
+                  onClick={onStop}
+                  className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs flex items-center gap-1.5 shadow-lg shadow-rose-950/40 transition-all"
+                  title="Stop execution (Ctrl+C)"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  <span>Stop</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim()}
+                  className={`p-2.5 rounded-lg font-mono text-xs flex items-center justify-center transition-all ${
+                    input.trim()
+                      ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-950/60 scale-100 hover:scale-105 active:scale-95'
+                      : 'text-gray-600 cursor-not-allowed opacity-50'
+                  }`}
+                  title="Send task"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        </BorderBeam>
 
-        <div className="flex items-center justify-between px-1 pt-1.5 text-[10px] text-gray-500 font-mono">
+        <div className="flex items-center justify-between px-1.5 pt-2 text-[10px] text-gray-500 font-mono">
           <span>Press Enter to send · Shift+Enter for newline · / for commands</span>
-          <span className="hidden sm:inline">Ctrl+C aborts active task</span>
+          <span className="hidden sm:inline">Autonomous self-healing engine active</span>
         </div>
       </div>
     </div>
