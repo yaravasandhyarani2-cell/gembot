@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Download
 } from 'lucide-react';
+import { BorderBeam } from 'border-beam';
 
 interface DirectoryPointerBarProps {
   onDirectoryChange?: (newPath: string) => void;

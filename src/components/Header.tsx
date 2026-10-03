@@ -14,6 +14,8 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { AgentConfig } from '../types';
+import { BorderBeam } from 'border-beam';
+import { ThinkingOrb } from 'thinking-orbs';
 
 interface HeaderProps {
   config: AgentConfig;
@@ -66,15 +68,19 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Model Switcher Badge */}
-        <button
-          onClick={onOpenModelSelect}
-          className="ml-2 flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono bg-purple-950/40 hover:bg-purple-900/40 text-purple-300 border border-purple-800/50 transition-colors"
-          title="Change active model (/models)"
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="truncate max-w-[130px]">{config.model}</span>
-          <ChevronDown className="w-3 h-3 text-purple-400/80" />
-        </button>
+        <div className="ml-2">
+          <BorderBeam size="sm" colorVariant="ocean" strength={0.65} theme="dark">
+            <button
+              onClick={onOpenModelSelect}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono bg-purple-950/40 hover:bg-purple-900/40 text-purple-300 border border-purple-800/50 transition-colors"
+              title="Change active model (/models)"
+            >
+              <ThinkingOrb state={isRunning ? "solving" : "breathing"} size={20} theme="dark" speed={isRunning ? 1.4 : 0.8} />
+              <span className="truncate max-w-[130px]">{config.model}</span>
+              <ChevronDown className="w-3 h-3 text-purple-400/80" />
+            </button>
+          </BorderBeam>
+        </div>
 
         {/* Safety Gate status badge */}
         <button

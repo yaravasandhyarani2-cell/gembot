@@ -11,12 +11,14 @@
   },
   "dependencies": {
     "@google/genai": "latest",
+    "border-beam": "^1.4.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "jszip": "^3.10.2",
     "lucide-react": "^1.16.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "thinking-orbs": "^0.3.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
